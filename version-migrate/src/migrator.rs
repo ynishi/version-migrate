@@ -87,10 +87,7 @@ impl Migrator {
 
             // Parse versions
             let current_ver = semver::Version::parse(current).map_err(|e| {
-                MigrationError::DeserializationError(format!(
-                    "Invalid semver '{}': {}",
-                    current, e
-                ))
+                MigrationError::DeserializationError(format!("Invalid semver '{}': {}", current, e))
             })?;
 
             let next_ver = semver::Version::parse(next).map_err(|e| {
@@ -798,9 +795,17 @@ mod tests {
         let versions = vec!["2.0.0".to_string(), "1.0.0".to_string()]; // Wrong order
 
         let result = Migrator::validate_migration_path(&entity, &versions);
-        assert!(matches!(result, Err(MigrationError::InvalidVersionOrder { .. })));
+        assert!(matches!(
+            result,
+            Err(MigrationError::InvalidVersionOrder { .. })
+        ));
 
-        if let Err(MigrationError::InvalidVersionOrder { entity: e, from, to }) = result {
+        if let Err(MigrationError::InvalidVersionOrder {
+            entity: e,
+            from,
+            to,
+        }) = result
+        {
             assert_eq!(e, "test");
             assert_eq!(from, "2.0.0");
             assert_eq!(to, "1.0.0");
@@ -818,7 +823,10 @@ mod tests {
         ];
 
         let result = Migrator::validate_migration_path(&entity, &versions);
-        assert!(matches!(result, Err(MigrationError::CircularMigrationPath { .. })));
+        assert!(matches!(
+            result,
+            Err(MigrationError::CircularMigrationPath { .. })
+        ));
 
         if let Err(MigrationError::CircularMigrationPath { entity: e, path }) = result {
             assert_eq!(e, "test");

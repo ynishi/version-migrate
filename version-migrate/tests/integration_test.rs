@@ -204,14 +204,16 @@ fn test_roundtrip_preserves_data() {
     let json = migrator.save(original).expect("Save failed");
 
     // Load back
-    let wrapper: VersionedWrapper<TaskV1_1_0> =
-        serde_json::from_str(&json).expect("Parse failed");
+    let wrapper: VersionedWrapper<TaskV1_1_0> = serde_json::from_str(&json).expect("Parse failed");
 
     // Verify all fields preserved
     assert_eq!(wrapper.version, "1.1.0");
     assert_eq!(wrapper.data.id, "roundtrip-1");
     assert_eq!(wrapper.data.title, "Roundtrip Test");
-    assert_eq!(wrapper.data.description, Some("Testing roundtrip".to_string()));
+    assert_eq!(
+        wrapper.data.description,
+        Some("Testing roundtrip".to_string())
+    );
 }
 
 #[test]
@@ -293,7 +295,8 @@ data:
 "#;
 
     // Parse YAML
-    let yaml_value: serde_yaml::Value = serde_yaml::from_str(yaml_str).expect("Failed to parse YAML");
+    let yaml_value: serde_yaml::Value =
+        serde_yaml::from_str(yaml_str).expect("Failed to parse YAML");
 
     // Setup migrator
     let task_path = Migrator::define("task")
@@ -327,7 +330,8 @@ data:
 "#;
 
     // Parse YAML
-    let yaml_value: serde_yaml::Value = serde_yaml::from_str(yaml_str).expect("Failed to parse YAML");
+    let yaml_value: serde_yaml::Value =
+        serde_yaml::from_str(yaml_str).expect("Failed to parse YAML");
 
     // Setup migrator
     let task_path = Migrator::define("task")
@@ -360,7 +364,8 @@ fn test_load_from_multi_format_consistency() {
     migrator.register(task_path).unwrap();
 
     // Same data in different formats
-    let json_str = r#"{"version":"1.0.0","data":{"id":"multi-format","title":"Multi Format Test"}}"#;
+    let json_str =
+        r#"{"version":"1.0.0","data":{"id":"multi-format","title":"Multi Format Test"}}"#;
 
     let toml_str = r#"
 version = "1.0.0"
@@ -381,11 +386,15 @@ data:
 
     // Load from TOML
     let toml_value: toml::Value = toml::from_str(toml_str).expect("TOML parse failed");
-    let from_toml: TaskEntity = migrator.load_from("task", toml_value).expect("TOML load failed");
+    let from_toml: TaskEntity = migrator
+        .load_from("task", toml_value)
+        .expect("TOML load failed");
 
     // Load from YAML
     let yaml_value: serde_yaml::Value = serde_yaml::from_str(yaml_str).expect("YAML parse failed");
-    let from_yaml: TaskEntity = migrator.load_from("task", yaml_value).expect("YAML load failed");
+    let from_yaml: TaskEntity = migrator
+        .load_from("task", yaml_value)
+        .expect("YAML load failed");
 
     // All should produce the same result
     assert_eq!(from_json, from_toml);
