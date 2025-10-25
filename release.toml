@@ -7,9 +7,9 @@ consolidate-commits = true
 push = false
 # Automatically create git tags
 tag = true
-# Tag name prefix
-tag-prefix = "v"
 # Tag message template
 tag-message = "Release version {{version}}"
 # Don't publish automatically (we'll do it manually)
 publish = false
+
+# Note: cargo-release adds 'v' prefix by default, so no need to set tag-prefix
