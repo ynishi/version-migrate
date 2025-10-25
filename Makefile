@@ -1,4 +1,4 @@
-.PHONY: help preflight publish test check build clean examples doc release-check release
+.PHONY: help preflight publish test check build clean examples doc release-check release release-patch release-minor
 
 help:
 	@echo "Available targets:"
@@ -9,7 +9,9 @@ help:
 	@echo "  make examples       - Run all examples"
 	@echo "  make preflight      - Run all checks before publishing"
 	@echo "  make release-check  - Dry-run release with cargo-release"
-	@echo "  make release        - Release with cargo-release"
+	@echo "  make release        - Release patch version (0.x.y -> 0.x.y+1)"
+	@echo "  make release-patch  - Release patch version (same as release)"
+	@echo "  make release-minor  - Release minor version (0.x.y -> 0.x+1.0)"
 	@echo "  make publish        - Publish to crates.io manually"
 	@echo "  make clean          - Clean build artifacts"
 
@@ -67,18 +69,32 @@ release-check:
 	@echo "Note: Install cargo-release if not already installed:"
 	@echo "  cargo install cargo-release"
 	@echo ""
-	cargo release --workspace --exclude version-migrate-macro --dry-run
+	@echo "Checking patch release (0.x.y -> 0.x.y+1)..."
+	cargo release patch
 
-release: preflight
-	@echo "🚀 Releasing with cargo-release..."
+release-patch: preflight
+	@echo "🚀 Releasing PATCH version with cargo-release..."
 	@echo ""
 	@echo "This will:"
-	@echo "  - Update version numbers"
-	@echo "  - Create git tags"
-	@echo "  - Publish to crates.io in the correct order"
+	@echo "  - Update version numbers (0.x.y -> 0.x.y+1)"
+	@echo "  - Create git commit and tag"
+	@echo "  - (Publish step is manual, see make publish)"
 	@echo ""
 	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
-	cargo release --workspace --exclude version-migrate-macro --execute
+	cargo release patch --execute --no-confirm
+
+release-minor: preflight
+	@echo "🚀 Releasing MINOR version with cargo-release..."
+	@echo ""
+	@echo "This will:"
+	@echo "  - Update version numbers (0.x.y -> 0.x+1.0)"
+	@echo "  - Create git commit and tag"
+	@echo "  - (Publish step is manual, see make publish)"
+	@echo ""
+	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
+	cargo release minor --execute --no-confirm
+
+release: release-patch
 
 # 手動公開（cargo-releaseを使わない場合）
 publish: preflight
