@@ -19,6 +19,7 @@ Applications that persist data locally (e.g., session data, configuration) requi
 - **Robust**: Provides a safe and reliable path to migrate data from any old version to the latest domain model
 - **Separation of Concerns**: The core domain model remains completely unaware of persistence layer versioning details
 - **Developer Experience**: `serde`-like derive macro (`#[derive(Versioned)]`) to minimize boilerplate
+- **Format Flexibility**: Load from any serde-compatible format (JSON, TOML, YAML, etc.)
 
 ## Installation
 
@@ -94,12 +95,98 @@ fn main() {
     let mut migrator = Migrator::new();
     migrator.register(task_path);
 
-    // Load and migrate data
-    let json = r#"{"version":"1.0.0","data":{"id":"task-1","title":"Test"}}"#;
-    let task: TaskEntity = migrator.load("task", json).unwrap();
+    // Save versioned data
+    let old_task = Task_V1_0_0 {
+        id: "task-1".to_string(),
+        title: "Test".to_string(),
+    };
+    let json = migrator.save(old_task).unwrap();
+    // Output: {"version":"1.0.0","data":{"id":"task-1","title":"Test"}}
+
+    // Load and automatically migrate to latest version
+    let task: TaskEntity = migrator.load("task", &json).unwrap();
 
     assert_eq!(task.title, "Test");
-    assert_eq!(task.description, None);
+    assert_eq!(task.description, None); // Migrated from V1.0.0
+}
+```
+
+## Key Features
+
+### Save and Load
+
+```rust
+// Save versioned data to JSON
+let task = TaskV1_0_0 { id: "1".into(), title: "My Task".into() };
+let json = migrator.save(task)?;
+// → {"version":"1.0.0","data":{"id":"1","title":"My Task"}}
+
+// Load and automatically migrate to latest version
+let task: TaskEntity = migrator.load("task", &json)?;
+```
+
+### Multiple Format Support
+
+The `load_from` method supports loading from any serde-compatible format (TOML, YAML, etc.):
+
+```rust
+// Load from TOML
+let toml_str = r#"
+version = "1.0.0"
+[data]
+id = "task-1"
+title = "My Task"
+"#;
+let toml_value: toml::Value = toml::from_str(toml_str)?;
+let task: TaskEntity = migrator.load_from("task", toml_value)?;
+
+// Load from YAML
+let yaml_str = r#"
+version: "1.0.0"
+data:
+  id: "task-1"
+  title: "My Task"
+"#;
+let yaml_value: serde_yaml::Value = serde_yaml::from_str(yaml_str)?;
+let task: TaskEntity = migrator.load_from("task", yaml_value)?;
+
+// JSON still works with the convenient load() method
+let json = r#"{"version":"1.0.0","data":{"id":"task-1","title":"My Task"}}"#;
+let task: TaskEntity = migrator.load("task", json)?;
+```
+
+### Automatic Migration
+
+The migrator automatically applies all necessary migration steps:
+
+```rust
+// Even if data is V1.0.0, it will migrate through V1.1.0 → V1.2.0 → ... → Latest
+let old_json = r#"{"version":"1.0.0","data":{...}}"#;
+let latest: TaskEntity = migrator.load("task", old_json)?;
+```
+
+### Type-Safe Builder Pattern
+
+The builder pattern ensures migration paths are complete at compile time:
+
+```rust
+Migrator::define("task")
+    .from::<V1>()      // Starting version
+    .step::<V2>()      // Must implement MigratesTo<V2> for V1
+    .step::<V3>()      // Must implement MigratesTo<V3> for V2
+    .into::<Domain>(); // Must implement IntoDomain<Domain> for V3
+```
+
+### Comprehensive Error Handling
+
+All operations return `Result<T, MigrationError>`:
+
+```rust
+match migrator.load("task", json) {
+    Ok(task) => println!("Loaded: {:?}", task),
+    Err(MigrationError::EntityNotFound(e)) => eprintln!("Entity {} not registered", e),
+    Err(MigrationError::DeserializationError(e)) => eprintln!("Invalid JSON: {}", e),
+    Err(e) => eprintln!("Migration failed: {}", e),
 }
 ```
 

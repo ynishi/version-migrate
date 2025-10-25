@@ -40,12 +40,15 @@ impl Migrator {
         self.paths.insert(path.entity, path.inner);
     }
 
-    /// Loads and migrates data from a JSON string.
+    /// Loads and migrates data from any serde-compatible format.
+    ///
+    /// This is the generic version that accepts any type implementing `Serialize`.
+    /// For JSON strings, use the convenience method `load` instead.
     ///
     /// # Arguments
     ///
     /// * `entity` - The entity name used when registering the migration path
-    /// * `json` - A JSON string containing versioned data
+    /// * `data` - Versioned data in any serde-compatible format (e.g., `toml::Value`, `serde_json::Value`)
     ///
     /// # Returns
     ///
@@ -54,13 +57,37 @@ impl Migrator {
     /// # Errors
     ///
     /// Returns an error if:
-    /// - The JSON cannot be parsed
+    /// - The data cannot be converted to the internal format
     /// - The entity is not registered
     /// - A migration step fails
-    pub fn load<D: DeserializeOwned>(&self, entity: &str, json: &str) -> Result<D, MigrationError> {
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Load from TOML
+    /// let toml_data: toml::Value = toml::from_str(toml_str)?;
+    /// let domain: TaskEntity = migrator.load_from("task", toml_data)?;
+    ///
+    /// // Load from JSON Value
+    /// let json_data: serde_json::Value = serde_json::from_str(json_str)?;
+    /// let domain: TaskEntity = migrator.load_from("task", json_data)?;
+    /// ```
+    pub fn load_from<D, T>(&self, entity: &str, data: T) -> Result<D, MigrationError>
+    where
+        D: DeserializeOwned,
+        T: Serialize,
+    {
+        // Convert the input data to serde_json::Value for internal processing
+        let value = serde_json::to_value(data).map_err(|e| {
+            MigrationError::DeserializationError(format!(
+                "Failed to convert input data to internal format: {}",
+                e
+            ))
+        })?;
+
         // First, deserialize the wrapper to get the version
         let wrapper: VersionedWrapper<serde_json::Value> =
-            serde_json::from_str(json).map_err(|e| {
+            serde_json::from_value(value).map_err(|e| {
                 MigrationError::DeserializationError(format!(
                     "Failed to parse VersionedWrapper: {}",
                     e
@@ -98,6 +125,40 @@ impl Migrator {
         serde_json::from_value(domain_value).map_err(|e| {
             MigrationError::DeserializationError(format!("Failed to convert to domain: {}", e))
         })
+    }
+
+    /// Loads and migrates data from a JSON string.
+    ///
+    /// This is a convenience method for the common case of loading from JSON.
+    /// For other formats, use `load_from` instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The entity name used when registering the migration path
+    /// * `json` - A JSON string containing versioned data
+    ///
+    /// # Returns
+    ///
+    /// The migrated data as the domain model type
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The JSON cannot be parsed
+    /// - The entity is not registered
+    /// - A migration step fails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let json = r#"{"version":"1.0.0","data":{"id":"task-1","title":"My Task"}}"#;
+    /// let domain: TaskEntity = migrator.load("task", json)?;
+    /// ```
+    pub fn load<D: DeserializeOwned>(&self, entity: &str, json: &str) -> Result<D, MigrationError> {
+        let data: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+            MigrationError::DeserializationError(format!("Failed to parse JSON: {}", e))
+        })?;
+        self.load_from(entity, data)
     }
 
     /// Saves versioned data to a JSON string.

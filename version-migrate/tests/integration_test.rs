@@ -213,3 +213,183 @@ fn test_roundtrip_preserves_data() {
     assert_eq!(wrapper.data.title, "Roundtrip Test");
     assert_eq!(wrapper.data.description, Some("Testing roundtrip".to_string()));
 }
+
+#[test]
+fn test_load_from_toml() {
+    // Create TOML representation of versioned data
+    let toml_str = r#"
+version = "1.0.0"
+
+[data]
+id = "task-toml"
+title = "Task from TOML"
+"#;
+
+    // Parse TOML
+    let toml_value: toml::Value = toml::from_str(toml_str).expect("Failed to parse TOML");
+
+    // Setup migrator
+    let task_path = Migrator::define("task")
+        .from::<TaskV1_0_0>()
+        .step::<TaskV1_1_0>()
+        .into::<TaskEntity>();
+
+    let mut migrator = Migrator::new();
+    migrator.register(task_path);
+
+    // Load from TOML using load_from
+    let task: TaskEntity = migrator
+        .load_from("task", toml_value)
+        .expect("Failed to load from TOML");
+
+    // Verify the result
+    assert_eq!(task.id, "task-toml");
+    assert_eq!(task.title, "Task from TOML");
+    assert_eq!(task.description, None); // Default from migration
+}
+
+#[test]
+fn test_load_from_toml_latest_version() {
+    // Create TOML representation with latest version
+    let toml_str = r#"
+version = "1.1.0"
+
+[data]
+id = "task-toml-latest"
+title = "Latest Task from TOML"
+description = "TOML description"
+"#;
+
+    // Parse TOML
+    let toml_value: toml::Value = toml::from_str(toml_str).expect("Failed to parse TOML");
+
+    // Setup migrator
+    let task_path = Migrator::define("task")
+        .from::<TaskV1_1_0>()
+        .into::<TaskEntity>();
+
+    let mut migrator = Migrator::new();
+    migrator.register(task_path);
+
+    // Load from TOML
+    let task: TaskEntity = migrator
+        .load_from("task", toml_value)
+        .expect("Failed to load from TOML");
+
+    // Verify the result
+    assert_eq!(task.id, "task-toml-latest");
+    assert_eq!(task.title, "Latest Task from TOML");
+    assert_eq!(task.description, Some("TOML description".to_string()));
+}
+
+#[test]
+fn test_load_from_yaml() {
+    // Create YAML representation of versioned data
+    let yaml_str = r#"
+version: "1.0.0"
+data:
+  id: "task-yaml"
+  title: "Task from YAML"
+"#;
+
+    // Parse YAML
+    let yaml_value: serde_yaml::Value = serde_yaml::from_str(yaml_str).expect("Failed to parse YAML");
+
+    // Setup migrator
+    let task_path = Migrator::define("task")
+        .from::<TaskV1_0_0>()
+        .step::<TaskV1_1_0>()
+        .into::<TaskEntity>();
+
+    let mut migrator = Migrator::new();
+    migrator.register(task_path);
+
+    // Load from YAML using load_from
+    let task: TaskEntity = migrator
+        .load_from("task", yaml_value)
+        .expect("Failed to load from YAML");
+
+    // Verify the result
+    assert_eq!(task.id, "task-yaml");
+    assert_eq!(task.title, "Task from YAML");
+    assert_eq!(task.description, None); // Default from migration
+}
+
+#[test]
+fn test_load_from_yaml_latest_version() {
+    // Create YAML representation with latest version
+    let yaml_str = r#"
+version: "1.1.0"
+data:
+  id: "task-yaml-latest"
+  title: "Latest Task from YAML"
+  description: "YAML description"
+"#;
+
+    // Parse YAML
+    let yaml_value: serde_yaml::Value = serde_yaml::from_str(yaml_str).expect("Failed to parse YAML");
+
+    // Setup migrator
+    let task_path = Migrator::define("task")
+        .from::<TaskV1_1_0>()
+        .into::<TaskEntity>();
+
+    let mut migrator = Migrator::new();
+    migrator.register(task_path);
+
+    // Load from YAML
+    let task: TaskEntity = migrator
+        .load_from("task", yaml_value)
+        .expect("Failed to load from YAML");
+
+    // Verify the result
+    assert_eq!(task.id, "task-yaml-latest");
+    assert_eq!(task.title, "Latest Task from YAML");
+    assert_eq!(task.description, Some("YAML description".to_string()));
+}
+
+#[test]
+fn test_load_from_multi_format_consistency() {
+    // Setup migrator once
+    let task_path = Migrator::define("task")
+        .from::<TaskV1_0_0>()
+        .step::<TaskV1_1_0>()
+        .into::<TaskEntity>();
+
+    let mut migrator = Migrator::new();
+    migrator.register(task_path);
+
+    // Same data in different formats
+    let json_str = r#"{"version":"1.0.0","data":{"id":"multi-format","title":"Multi Format Test"}}"#;
+
+    let toml_str = r#"
+version = "1.0.0"
+[data]
+id = "multi-format"
+title = "Multi Format Test"
+"#;
+
+    let yaml_str = r#"
+version: "1.0.0"
+data:
+  id: "multi-format"
+  title: "Multi Format Test"
+"#;
+
+    // Load from JSON
+    let from_json: TaskEntity = migrator.load("task", json_str).expect("JSON load failed");
+
+    // Load from TOML
+    let toml_value: toml::Value = toml::from_str(toml_str).expect("TOML parse failed");
+    let from_toml: TaskEntity = migrator.load_from("task", toml_value).expect("TOML load failed");
+
+    // Load from YAML
+    let yaml_value: serde_yaml::Value = serde_yaml::from_str(yaml_str).expect("YAML parse failed");
+    let from_yaml: TaskEntity = migrator.load_from("task", yaml_value).expect("YAML load failed");
+
+    // All should produce the same result
+    assert_eq!(from_json, from_toml);
+    assert_eq!(from_json, from_yaml);
+    assert_eq!(from_json.id, "multi-format");
+    assert_eq!(from_json.title, "Multi Format Test");
+}
