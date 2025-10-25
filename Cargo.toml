@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "version-migrate",
+    "version-migrate-macro",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Yutaka Nishimura"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/version-migrate"
+documentation = "https://docs.rs/version-migrate"
+readme = "README.md"
+keywords = ["migration", "versioning", "schema", "persistence"]
+categories = ["data-structures", "encoding"]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
