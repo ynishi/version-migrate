@@ -137,50 +137,146 @@ pub enum MigrationError {
 
 The error type implements `std::fmt::Display` and `std::error::Error` for proper error handling integration.
 
-## 6. Areas for Future Consideration
+### 5.2. Serialization Format Flexibility ✅ **Implemented**
 
-### 6.1. Serialization Format Flexibility
+The library now supports loading from any serde-compatible format (TOML, YAML, etc.) in addition to JSON.
 
-The current architecture is tightly coupled to `serde_json`. To support other formats like `bincode`, `yaml`, or `cbor`, the `load` method could be made generic to accept any `impl serde::Deserializer`.
-
-**Potential API:**
+**Implementation:**
 
 ```rust
-pub fn load_from<'de, D, T>(&self, entity: &str, deserializer: D) -> Result<T, MigrationError>
+// Generic method for any serde-compatible format
+pub fn load_from<D, T>(&self, entity: &str, data: T) -> Result<D, MigrationError>
 where
-    D: serde::Deserializer<'de>,
-    T: DeserializeOwned,
+    D: DeserializeOwned,
+    T: Serialize,
 {
-    // Implementation
+    // Converts input to serde_json::Value for internal processing
 }
+
+// Convenience method for JSON
+pub fn load<D: DeserializeOwned>(&self, entity: &str, json: &str) -> Result<D, MigrationError>
 ```
 
-### 6.2. Async Support
+**Usage:**
 
-The current traits are synchronous. For migrations that require I/O (e.g., database queries, API calls), introducing async versions of the traits (e.g., using `#[async_trait]`) would be a valuable future addition.
+```rust
+// Load from TOML
+let toml_value: toml::Value = toml::from_str(toml_str)?;
+let entity: DomainModel = migrator.load_from("entity", toml_value)?;
 
-**Potential API:**
+// Load from YAML
+let yaml_value: serde_yaml::Value = serde_yaml::from_str(yaml_str)?;
+let entity: DomainModel = migrator.load_from("entity", yaml_value)?;
+
+// Load from JSON (convenient)
+let entity: DomainModel = migrator.load("entity", json_str)?;
+```
+
+### 5.3. Async Support ✅ **Implemented**
+
+Async versions of migration traits are now available for migrations requiring I/O operations.
+
+**Implementation:**
 
 ```rust
 #[async_trait]
-pub trait AsyncMigratesTo<T: Versioned>: Versioned {
+pub trait AsyncMigratesTo<T: Versioned>: Versioned + Send {
     async fn migrate(self) -> Result<T, MigrationError>;
+}
+
+#[async_trait]
+pub trait AsyncIntoDomain<D>: Versioned + Send {
+    async fn into_domain(self) -> Result<D, MigrationError>;
 }
 ```
 
-### 6.3. Migration Validation
+**Usage:**
 
-Add compile-time or runtime validation to ensure:
-- No circular migration paths
-- All versions in a migration chain are reachable
-- Version ordering follows semantic versioning rules
+```rust
+use version_migrate::{async_trait, AsyncMigratesTo, AsyncIntoDomain};
 
-### 6.4. Migration Rollback Support
+#[async_trait]
+impl AsyncMigratesTo<TaskV1_1_0> for TaskV1_0_0 {
+    async fn migrate(self) -> Result<TaskV1_1_0, MigrationError> {
+        // Fetch additional data from database
+        let metadata = fetch_from_db(&self.id).await?;
 
-Support for bidirectional migrations to enable rollback scenarios:
+        Ok(TaskV1_1_0 {
+            id: self.id,
+            title: self.title,
+            metadata: Some(metadata),
+        })
+    }
+}
+
+#[async_trait]
+impl AsyncIntoDomain<TaskEntity> for TaskV1_1_0 {
+    async fn into_domain(self) -> Result<TaskEntity, MigrationError> {
+        // Enrich with external API
+        let enriched = enrich_via_api(&self).await?;
+        Ok(enriched)
+    }
+}
+```
+
+### 5.4. Migration Validation ✅ **Implemented**
+
+The library now performs automatic runtime validation to ensure migration path correctness.
+
+**Implementation:**
+
+Validation is performed when registering migration paths via `Migrator::register()`:
+
+- **Circular path detection**: Prevents cycles like V1 → V2 → V1
+- **Semver ordering validation**: Ensures versions increase (1.0.0 → 1.1.0 → 2.0.0)
+
+**New Error Types:**
+
+```rust
+pub enum MigrationError {
+    // ...existing variants...
+
+    CircularMigrationPath {
+        entity: String,
+        path: String,
+    },
+
+    InvalidVersionOrder {
+        entity: String,
+        from: String,
+        to: String,
+    },
+}
+```
+
+**Usage:**
+
+```rust
+let path = Migrator::define("task")
+    .from::<TaskV1_0_0>()
+    .step::<TaskV1_1_0>()
+    .into::<TaskEntity>();
+
+let mut migrator = Migrator::new();
+migrator.register(path)?; // Validates before registering
+```
+
+## 6. Areas for Future Consideration
+
+### 6.1. Migration Rollback Support
+
+Support for bidirectional migrations to enable rollback scenarios. This feature is deferred as it adds complexity and is rarely needed for local application data.
+
+**Potential API:**
 
 ```rust
 pub trait MigratesFrom<T: Versioned>: Versioned {
     fn rollback(self) -> T;
 }
 ```
+
+**Rationale for deferral:**
+- Adds significant complexity to the builder API
+- Rarely needed for local application data (config, session state)
+- Forward-only migration is sufficient for most use cases
+- Can be added in a future version if demand arises
