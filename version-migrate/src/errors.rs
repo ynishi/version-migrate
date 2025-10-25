@@ -36,6 +36,26 @@ pub enum MigrationError {
         /// The error message.
         error: String,
     },
+
+    /// A circular migration path was detected.
+    #[error("Circular migration path detected in entity '{entity}': {path}")]
+    CircularMigrationPath {
+        /// The entity name.
+        entity: String,
+        /// The path that forms a cycle.
+        path: String,
+    },
+
+    /// Version ordering is invalid (not following semver rules).
+    #[error("Invalid version order in entity '{entity}': '{from}' -> '{to}' (versions must increase according to semver)")]
+    InvalidVersionOrder {
+        /// The entity name.
+        entity: String,
+        /// The source version.
+        from: String,
+        /// The target version.
+        to: String,
+    },
 }
 
 #[cfg(test)]
@@ -103,5 +123,32 @@ mod tests {
         let err = MigrationError::DeserializationError("test".to_string());
         // MigrationError should implement std::error::Error
         let _: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn test_error_display_circular_migration_path() {
+        let err = MigrationError::CircularMigrationPath {
+            entity: "task".to_string(),
+            path: "1.0.0 -> 2.0.0 -> 1.0.0".to_string(),
+        };
+        let display = format!("{}", err);
+        assert!(display.contains("Circular migration path"));
+        assert!(display.contains("task"));
+        assert!(display.contains("1.0.0 -> 2.0.0 -> 1.0.0"));
+    }
+
+    #[test]
+    fn test_error_display_invalid_version_order() {
+        let err = MigrationError::InvalidVersionOrder {
+            entity: "task".to_string(),
+            from: "2.0.0".to_string(),
+            to: "1.0.0".to_string(),
+        };
+        let display = format!("{}", err);
+        assert!(display.contains("Invalid version order"));
+        assert!(display.contains("task"));
+        assert!(display.contains("2.0.0"));
+        assert!(display.contains("1.0.0"));
+        assert!(display.contains("must increase"));
     }
 }

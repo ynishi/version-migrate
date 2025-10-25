@@ -67,7 +67,7 @@ fn test_migration_from_v1_0_0_to_domain() {
         .into::<TaskEntity>();
 
     let mut migrator = Migrator::new();
-    migrator.register(task_path);
+    migrator.register(task_path).unwrap();
 
     // Load and migrate
     let task: TaskEntity = migrator.load("task", &json).expect("Migration failed");
@@ -97,7 +97,7 @@ fn test_load_latest_version() {
         .into::<TaskEntity>();
 
     let mut migrator = Migrator::new();
-    migrator.register(task_path);
+    migrator.register(task_path).unwrap();
 
     // Load
     let task: TaskEntity = migrator.load("task", &json).expect("Load failed");
@@ -150,7 +150,7 @@ fn test_save_and_load_with_migrator() {
         .into::<TaskEntity>();
 
     let mut migrator = Migrator::new();
-    migrator.register(task_path);
+    migrator.register(task_path).unwrap();
 
     // Load and migrate the saved data
     let loaded: TaskEntity = migrator.load("task", &json).expect("Load failed");
@@ -179,7 +179,7 @@ fn test_save_latest_and_load() {
         .into::<TaskEntity>();
 
     let mut migrator = Migrator::new();
-    migrator.register(task_path);
+    migrator.register(task_path).unwrap();
 
     // Load without migration needed
     let loaded: TaskEntity = migrator.load("task", &json).expect("Load failed");
@@ -235,7 +235,7 @@ title = "Task from TOML"
         .into::<TaskEntity>();
 
     let mut migrator = Migrator::new();
-    migrator.register(task_path);
+    migrator.register(task_path).unwrap();
 
     // Load from TOML using load_from
     let task: TaskEntity = migrator
@@ -269,7 +269,7 @@ description = "TOML description"
         .into::<TaskEntity>();
 
     let mut migrator = Migrator::new();
-    migrator.register(task_path);
+    migrator.register(task_path).unwrap();
 
     // Load from TOML
     let task: TaskEntity = migrator
@@ -302,7 +302,7 @@ data:
         .into::<TaskEntity>();
 
     let mut migrator = Migrator::new();
-    migrator.register(task_path);
+    migrator.register(task_path).unwrap();
 
     // Load from YAML using load_from
     let task: TaskEntity = migrator
@@ -335,7 +335,7 @@ data:
         .into::<TaskEntity>();
 
     let mut migrator = Migrator::new();
-    migrator.register(task_path);
+    migrator.register(task_path).unwrap();
 
     // Load from YAML
     let task: TaskEntity = migrator
@@ -357,7 +357,7 @@ fn test_load_from_multi_format_consistency() {
         .into::<TaskEntity>();
 
     let mut migrator = Migrator::new();
-    migrator.register(task_path);
+    migrator.register(task_path).unwrap();
 
     // Same data in different formats
     let json_str = r#"{"version":"1.0.0","data":{"id":"multi-format","title":"Multi Format Test"}}"#;

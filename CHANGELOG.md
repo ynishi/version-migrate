@@ -24,11 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `EntityNotFound` for unregistered entities
   - `MigrationPathNotDefined` for missing migration paths
   - `MigrationStepFailed` for migration execution failures
+  - `CircularMigrationPath` for detecting circular migration paths
+  - `InvalidVersionOrder` for semver ordering violations
 - Separated error types into dedicated `errors` module
 - Serialization format flexibility - support for TOML, YAML, and any serde-compatible format
-- 37 tests (25 unit + 12 integration) covering all functionality including TOML/YAML support
+- Migration path validation
+  - Automatic validation when registering migration paths
+  - Circular migration path detection
+  - Semantic versioning order validation
+- 44 tests (32 unit + 12 integration) covering all functionality including validation
 
 ### Changed
+- `Migrator::register()` now returns `Result<(), MigrationError>` instead of `()` to support validation errors
 
 ### Deprecated
 

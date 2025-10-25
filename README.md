@@ -177,6 +177,24 @@ Migrator::define("task")
     .into::<Domain>(); // Must implement IntoDomain<Domain> for V3
 ```
 
+### Migration Path Validation
+
+Migration paths are automatically validated when registered:
+
+```rust
+let path = Migrator::define("task")
+    .from::<TaskV1_0_0>()
+    .step::<TaskV1_1_0>()
+    .into::<TaskEntity>();
+
+let mut migrator = Migrator::new();
+migrator.register(path)?; // Validates before registering
+```
+
+Validation checks:
+- **No circular paths**: Prevents version A → B → A loops
+- **Semver ordering**: Ensures versions increase (1.0.0 → 1.1.0 → 2.0.0)
+
 ### Comprehensive Error Handling
 
 All operations return `Result<T, MigrationError>`:
@@ -186,6 +204,12 @@ match migrator.load("task", json) {
     Ok(task) => println!("Loaded: {:?}", task),
     Err(MigrationError::EntityNotFound(e)) => eprintln!("Entity {} not registered", e),
     Err(MigrationError::DeserializationError(e)) => eprintln!("Invalid JSON: {}", e),
+    Err(MigrationError::CircularMigrationPath { entity, path }) => {
+        eprintln!("Circular path in {}: {}", entity, path)
+    }
+    Err(MigrationError::InvalidVersionOrder { entity, from, to }) => {
+        eprintln!("Invalid version order in {}: {} -> {}", entity, from, to)
+    }
     Err(e) => eprintln!("Migration failed: {}", e),
 }
 ```

@@ -35,9 +35,79 @@ impl Migrator {
         MigrationPathBuilder::new(entity.to_string())
     }
 
-    /// Registers a migration path.
-    pub fn register<D>(&mut self, path: MigrationPath<D>) {
+    /// Registers a migration path with validation.
+    ///
+    /// This method validates the migration path before registering it:
+    /// - Checks for circular migration paths
+    /// - Validates version ordering follows semver rules
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation fails.
+    pub fn register<D>(&mut self, path: MigrationPath<D>) -> Result<(), MigrationError> {
+        Self::validate_migration_path(&path.entity, &path.versions)?;
         self.paths.insert(path.entity, path.inner);
+        Ok(())
+    }
+
+    /// Validates a migration path for correctness.
+    fn validate_migration_path(entity: &str, versions: &[String]) -> Result<(), MigrationError> {
+        // Check for circular paths
+        Self::check_circular_path(entity, versions)?;
+
+        // Check version ordering
+        Self::check_version_ordering(entity, versions)?;
+
+        Ok(())
+    }
+
+    /// Checks if there are any circular dependencies in the migration path.
+    fn check_circular_path(entity: &str, versions: &[String]) -> Result<(), MigrationError> {
+        let mut seen = std::collections::HashSet::new();
+
+        for version in versions {
+            if !seen.insert(version) {
+                // Found a duplicate - circular path detected
+                let path = versions.join(" -> ");
+                return Err(MigrationError::CircularMigrationPath {
+                    entity: entity.to_string(),
+                    path,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Checks if versions are ordered according to semver rules.
+    fn check_version_ordering(entity: &str, versions: &[String]) -> Result<(), MigrationError> {
+        for i in 0..versions.len().saturating_sub(1) {
+            let current = &versions[i];
+            let next = &versions[i + 1];
+
+            // Parse versions
+            let current_ver = semver::Version::parse(current).map_err(|e| {
+                MigrationError::DeserializationError(format!(
+                    "Invalid semver '{}': {}",
+                    current, e
+                ))
+            })?;
+
+            let next_ver = semver::Version::parse(next).map_err(|e| {
+                MigrationError::DeserializationError(format!("Invalid semver '{}': {}", next, e))
+            })?;
+
+            // Check that next version is greater than current
+            if next_ver <= current_ver {
+                return Err(MigrationError::InvalidVersionOrder {
+                    entity: entity.to_string(),
+                    from: current.clone(),
+                    to: next.clone(),
+                });
+            }
+        }
+
+        Ok(())
     }
 
     /// Loads and migrates data from any serde-compatible format.
@@ -219,6 +289,7 @@ pub struct HasSteps<V>(PhantomData<V>);
 pub struct MigrationPathBuilder<State> {
     entity: String,
     steps: HashMap<String, MigrationFn>,
+    versions: Vec<String>,
     _state: PhantomData<State>,
 }
 
@@ -227,15 +298,20 @@ impl MigrationPathBuilder<Start> {
         Self {
             entity,
             steps: HashMap::new(),
+            versions: Vec::new(),
             _state: PhantomData,
         }
     }
 
     /// Sets the starting version for migrations.
     pub fn from<V: Versioned + DeserializeOwned>(self) -> MigrationPathBuilder<HasFrom<V>> {
+        let mut versions = self.versions;
+        versions.push(V::VERSION.to_string());
+
         MigrationPathBuilder {
             entity: self.entity,
             steps: self.steps,
+            versions,
             _state: PhantomData,
         }
     }
@@ -272,10 +348,12 @@ where
         });
 
         self.steps.insert(from_version, migration_fn);
+        self.versions.push(Next::VERSION.to_string());
 
         MigrationPathBuilder {
             entity: self.entity,
             steps: self.steps,
+            versions: self.versions,
             _state: PhantomData,
         }
     }
@@ -309,6 +387,7 @@ where
                 steps: self.steps,
                 finalize,
             },
+            versions: self.versions,
             _phantom: PhantomData,
         }
     }
@@ -345,10 +424,12 @@ where
         });
 
         self.steps.insert(from_version, migration_fn);
+        self.versions.push(Next::VERSION.to_string());
 
         MigrationPathBuilder {
             entity: self.entity,
             steps: self.steps,
+            versions: self.versions,
             _state: PhantomData,
         }
     }
@@ -382,6 +463,7 @@ where
                 steps: self.steps,
                 finalize,
             },
+            versions: self.versions,
             _phantom: PhantomData,
         }
     }
@@ -391,6 +473,8 @@ where
 pub struct MigrationPath<D> {
     entity: String,
     inner: EntityMigrationPath,
+    /// List of versions in the migration path for validation
+    versions: Vec<String>,
     _phantom: PhantomData<D>,
 }
 
@@ -487,7 +571,7 @@ mod tests {
             .into::<Domain>();
 
         let mut migrator = Migrator::new();
-        migrator.register(path);
+        migrator.register(path).unwrap();
 
         let v2 = V2 {
             value: "test".to_string(),
@@ -511,7 +595,7 @@ mod tests {
             .into::<Domain>();
 
         let mut migrator = Migrator::new();
-        migrator.register(path);
+        migrator.register(path).unwrap();
 
         let v1 = V1 {
             value: "multi_step".to_string(),
@@ -530,7 +614,7 @@ mod tests {
         let path = Migrator::define("test").from::<V3>().into::<Domain>();
 
         let mut migrator = Migrator::new();
-        migrator.register(path);
+        migrator.register(path).unwrap();
 
         let v3 = V3 {
             value: "latest".to_string(),
@@ -569,7 +653,7 @@ mod tests {
         let path = Migrator::define("test").from::<V3>().into::<Domain>();
 
         let mut migrator = Migrator::new();
-        migrator.register(path);
+        migrator.register(path).unwrap();
 
         let invalid_json = "{ invalid json }";
         let result: Result<Domain, MigrationError> = migrator.load("test", invalid_json);
@@ -604,8 +688,8 @@ mod tests {
             .into::<OtherDomain>();
 
         let mut migrator = Migrator::new();
-        migrator.register(path1);
-        migrator.register(path2);
+        migrator.register(path1).unwrap();
+        migrator.register(path2).unwrap();
 
         // Test entity1
         let v1 = V1 {
@@ -656,7 +740,7 @@ mod tests {
             .into::<Domain>();
 
         let mut migrator = Migrator::new();
-        migrator.register(path);
+        migrator.register(path).unwrap();
 
         // Save V1 data
         let v1 = V1 {
@@ -705,5 +789,75 @@ mod tests {
         // Should be compact JSON (not pretty-printed)
         assert!(!json.contains('\n'));
         assert!(json.contains("\"version\":\"2.0.0\""));
+    }
+
+    #[test]
+    fn test_validation_invalid_version_order() {
+        // Manually construct a path with invalid version ordering
+        let entity = "test".to_string();
+        let versions = vec!["2.0.0".to_string(), "1.0.0".to_string()]; // Wrong order
+
+        let result = Migrator::validate_migration_path(&entity, &versions);
+        assert!(matches!(result, Err(MigrationError::InvalidVersionOrder { .. })));
+
+        if let Err(MigrationError::InvalidVersionOrder { entity: e, from, to }) = result {
+            assert_eq!(e, "test");
+            assert_eq!(from, "2.0.0");
+            assert_eq!(to, "1.0.0");
+        }
+    }
+
+    #[test]
+    fn test_validation_circular_path() {
+        // Manually construct a path with circular reference
+        let entity = "test".to_string();
+        let versions = vec![
+            "1.0.0".to_string(),
+            "2.0.0".to_string(),
+            "1.0.0".to_string(), // Circular!
+        ];
+
+        let result = Migrator::validate_migration_path(&entity, &versions);
+        assert!(matches!(result, Err(MigrationError::CircularMigrationPath { .. })));
+
+        if let Err(MigrationError::CircularMigrationPath { entity: e, path }) = result {
+            assert_eq!(e, "test");
+            assert!(path.contains("1.0.0"));
+            assert!(path.contains("2.0.0"));
+        }
+    }
+
+    #[test]
+    fn test_validation_valid_path() {
+        // Valid migration path
+        let entity = "test".to_string();
+        let versions = vec![
+            "1.0.0".to_string(),
+            "1.1.0".to_string(),
+            "2.0.0".to_string(),
+        ];
+
+        let result = Migrator::validate_migration_path(&entity, &versions);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validation_empty_path() {
+        // Empty path should be valid
+        let entity = "test".to_string();
+        let versions = vec![];
+
+        let result = Migrator::validate_migration_path(&entity, &versions);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validation_single_version() {
+        // Single version path should be valid (no steps, just final conversion)
+        let entity = "test".to_string();
+        let versions = vec!["1.0.0".to_string()];
+
+        let result = Migrator::validate_migration_path(&entity, &versions);
+        assert!(result.is_ok());
     }
 }
