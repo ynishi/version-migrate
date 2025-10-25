@@ -1,8 +1,6 @@
 # cargo-release configuration
 # https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
 
-# Workspace-level settings
-[workspace]
 # Update all crate versions together
 consolidate-commits = true
 # Automatically push to remote
@@ -13,29 +11,9 @@ tag = true
 tag-prefix = "v"
 # Tag message template
 tag-message = "Release version {{version}}"
-
-# version-migrate crate configuration
-[[package]]
-name = "version-migrate"
 # Publish to crates.io
 publish = true
-# Run tests before release
-pre-release-hook = ["make", "preflight"]
 
-# version-migrate-macro crate configuration
-[[package]]
-name = "version-migrate-macro"
-# Publish to crates.io
-publish = true
-# This crate is published first
-# (because version-migrate depends on it)
-
-# Global release settings
-[release]
-# Push changes on release
-push = true
-# Create git tag
-tag = true
 # Update CHANGELOG and README before release
 pre-release-replacements = [
   {file="CHANGELOG.md", search="Unreleased", replace="{{version}}", exactly=1},
