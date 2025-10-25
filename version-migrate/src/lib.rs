@@ -67,6 +67,9 @@ pub use errors::MigrationError;
 // Re-export migrator types
 pub use migrator::{MigrationPath, Migrator};
 
+// Re-export async-trait for user convenience
+pub use async_trait::async_trait;
+
 /// A trait for versioned data schemas.
 ///
 /// This trait marks a type as representing a specific version of a data schema.
@@ -92,6 +95,34 @@ pub trait MigratesTo<T: Versioned>: Versioned {
 pub trait IntoDomain<D>: Versioned {
     /// Converts this versioned data into the domain model.
     fn into_domain(self) -> D;
+}
+
+/// Async version of `MigratesTo` for migrations requiring I/O operations.
+///
+/// Use this trait when migrations need to perform asynchronous operations
+/// such as database queries or API calls.
+#[async_trait::async_trait]
+pub trait AsyncMigratesTo<T: Versioned>: Versioned + Send {
+    /// Asynchronously migrates from the current version to the target version.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MigrationError` if the migration fails.
+    async fn migrate(self) -> Result<T, MigrationError>;
+}
+
+/// Async version of `IntoDomain` for domain conversions requiring I/O operations.
+///
+/// Use this trait when converting to the domain model requires asynchronous
+/// operations such as fetching additional data from external sources.
+#[async_trait::async_trait]
+pub trait AsyncIntoDomain<D>: Versioned + Send {
+    /// Asynchronously converts this versioned data into the domain model.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MigrationError` if the conversion fails.
+    async fn into_domain(self) -> Result<D, MigrationError>;
 }
 
 /// A wrapper for serialized data that includes explicit version information.

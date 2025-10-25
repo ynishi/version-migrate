@@ -32,7 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Automatic validation when registering migration paths
   - Circular migration path detection
   - Semantic versioning order validation
-- 44 tests (32 unit + 12 integration) covering all functionality including validation
+- Async support for migrations requiring I/O operations
+  - `AsyncMigratesTo<T>` trait for async migrations
+  - `AsyncIntoDomain<D>` trait for async domain conversions
+  - Support for database queries, API calls, and other async operations
+- 47 tests (32 unit + 12 integration + 3 async) covering all functionality
 
 ### Changed
 - `Migrator::register()` now returns `Result<(), MigrationError>` instead of `()` to support validation errors

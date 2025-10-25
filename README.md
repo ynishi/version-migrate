@@ -20,6 +20,7 @@ Applications that persist data locally (e.g., session data, configuration) requi
 - **Separation of Concerns**: The core domain model remains completely unaware of persistence layer versioning details
 - **Developer Experience**: `serde`-like derive macro (`#[derive(Versioned)]`) to minimize boilerplate
 - **Format Flexibility**: Load from any serde-compatible format (JSON, TOML, YAML, etc.)
+- **Async Support**: Async traits for migrations requiring I/O operations (database, API calls)
 
 ## Installation
 
@@ -175,6 +176,37 @@ Migrator::define("task")
     .step::<V2>()      // Must implement MigratesTo<V2> for V1
     .step::<V3>()      // Must implement MigratesTo<V3> for V2
     .into::<Domain>(); // Must implement IntoDomain<Domain> for V3
+```
+
+### Async Support
+
+For migrations requiring I/O operations (database queries, API calls), use async traits:
+
+```rust
+use version_migrate::{async_trait, AsyncMigratesTo, AsyncIntoDomain};
+
+#[async_trait]
+impl AsyncMigratesTo<TaskV1_1_0> for TaskV1_0_0 {
+    async fn migrate(self) -> Result<TaskV1_1_0, MigrationError> {
+        // Fetch additional data from database
+        let metadata = fetch_metadata(&self.id).await?;
+
+        Ok(TaskV1_1_0 {
+            id: self.id,
+            title: self.title,
+            metadata: Some(metadata),
+        })
+    }
+}
+
+#[async_trait]
+impl AsyncIntoDomain<TaskEntity> for TaskV1_1_0 {
+    async fn into_domain(self) -> Result<TaskEntity, MigrationError> {
+        // Enrich data with external API call
+        let enriched = enrich_task_data(&self).await?;
+        Ok(enriched)
+    }
+}
 ```
 
 ### Migration Path Validation
