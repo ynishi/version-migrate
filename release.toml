@@ -4,20 +4,12 @@
 # Update all crate versions together
 consolidate-commits = true
 # Automatically push to remote
-push = true
+push = false
 # Automatically create git tags
 tag = true
 # Tag name prefix
 tag-prefix = "v"
 # Tag message template
 tag-message = "Release version {{version}}"
-# Publish to crates.io
-publish = true
-
-# Update CHANGELOG and README before release
-pre-release-replacements = [
-  {file="CHANGELOG.md", search="Unreleased", replace="{{version}}", exactly=1},
-  {file="CHANGELOG.md", search="\\.\\.\\.HEAD", replace="...{{tag_name}}", exactly=1},
-  {file="CHANGELOG.md", search="ReleaseDate", replace="{{date}}", exactly=1},
-  {file="README.md", search="version-migrate = \"[0-9.]+\"", replace="version-migrate = \"{{version}}\""},
-]
+# Don't publish automatically (we'll do it manually)
+publish = false
