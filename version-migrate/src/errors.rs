@@ -9,6 +9,10 @@ pub enum MigrationError {
     #[error("Failed to deserialize: {0}")]
     DeserializationError(String),
 
+    /// Failed to serialize the data.
+    #[error("Failed to serialize: {0}")]
+    SerializationError(String),
+
     /// The requested entity type was not found in the migrator.
     #[error("Entity '{0}' not found")]
     EntityNotFound(String),
@@ -44,6 +48,14 @@ mod tests {
         let display = format!("{}", err);
         assert!(display.contains("Failed to deserialize"));
         assert!(display.contains("invalid JSON"));
+    }
+
+    #[test]
+    fn test_error_display_serialization() {
+        let err = MigrationError::SerializationError("invalid data".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("Failed to serialize"));
+        assert!(display.contains("invalid data"));
     }
 
     #[test]

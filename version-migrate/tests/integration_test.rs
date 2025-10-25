@@ -125,3 +125,91 @@ fn test_versioned_wrapper() {
     assert_eq!(wrapper.version, "1.0.0");
     assert_eq!(wrapper.data.id, "test");
 }
+
+#[test]
+fn test_save_and_load_with_migrator() {
+    let migrator = Migrator::new();
+
+    // Save V1.0.0 data
+    let task_v1 = TaskV1_0_0 {
+        id: "task-save".to_string(),
+        title: "Saved Task".to_string(),
+    };
+
+    let json = migrator.save(task_v1).expect("Save failed");
+
+    // Verify JSON format
+    assert!(json.contains("\"version\":\"1.0.0\""));
+    assert!(json.contains("\"task-save\""));
+    assert!(json.contains("\"Saved Task\""));
+
+    // Setup migration path
+    let task_path = Migrator::define("task")
+        .from::<TaskV1_0_0>()
+        .step::<TaskV1_1_0>()
+        .into::<TaskEntity>();
+
+    let mut migrator = Migrator::new();
+    migrator.register(task_path);
+
+    // Load and migrate the saved data
+    let loaded: TaskEntity = migrator.load("task", &json).expect("Load failed");
+
+    assert_eq!(loaded.id, "task-save");
+    assert_eq!(loaded.title, "Saved Task");
+    assert_eq!(loaded.description, None); // Default from migration
+}
+
+#[test]
+fn test_save_latest_and_load() {
+    let migrator = Migrator::new();
+
+    // Save V1.1.0 data (latest version)
+    let task_v1_1 = TaskV1_1_0 {
+        id: "task-latest".to_string(),
+        title: "Latest Task".to_string(),
+        description: Some("With description".to_string()),
+    };
+
+    let json = migrator.save(task_v1_1).expect("Save failed");
+
+    // Setup migration path for latest version
+    let task_path = Migrator::define("task")
+        .from::<TaskV1_1_0>()
+        .into::<TaskEntity>();
+
+    let mut migrator = Migrator::new();
+    migrator.register(task_path);
+
+    // Load without migration needed
+    let loaded: TaskEntity = migrator.load("task", &json).expect("Load failed");
+
+    assert_eq!(loaded.id, "task-latest");
+    assert_eq!(loaded.title, "Latest Task");
+    assert_eq!(loaded.description, Some("With description".to_string()));
+}
+
+#[test]
+fn test_roundtrip_preserves_data() {
+    let migrator = Migrator::new();
+
+    // Original data
+    let original = TaskV1_1_0 {
+        id: "roundtrip-1".to_string(),
+        title: "Roundtrip Test".to_string(),
+        description: Some("Testing roundtrip".to_string()),
+    };
+
+    // Save
+    let json = migrator.save(original).expect("Save failed");
+
+    // Load back
+    let wrapper: VersionedWrapper<TaskV1_1_0> =
+        serde_json::from_str(&json).expect("Parse failed");
+
+    // Verify all fields preserved
+    assert_eq!(wrapper.version, "1.1.0");
+    assert_eq!(wrapper.data.id, "roundtrip-1");
+    assert_eq!(wrapper.data.title, "Roundtrip Test");
+    assert_eq!(wrapper.data.description, Some("Testing roundtrip".to_string()));
+}

@@ -41,6 +41,22 @@ impl Migrator {
     }
 
     /// Loads and migrates data from a JSON string.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The entity name used when registering the migration path
+    /// * `json` - A JSON string containing versioned data
+    ///
+    /// # Returns
+    ///
+    /// The migrated data as the domain model type
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The JSON cannot be parsed
+    /// - The entity is not registered
+    /// - A migration step fails
     pub fn load<D: DeserializeOwned>(&self, entity: &str, json: &str) -> Result<D, MigrationError> {
         // First, deserialize the wrapper to get the version
         let wrapper: VersionedWrapper<serde_json::Value> =
@@ -81,6 +97,44 @@ impl Migrator {
 
         serde_json::from_value(domain_value).map_err(|e| {
             MigrationError::DeserializationError(format!("Failed to convert to domain: {}", e))
+        })
+    }
+
+    /// Saves versioned data to a JSON string.
+    ///
+    /// This method wraps the provided data with its version information and serializes
+    /// it to JSON format. The resulting JSON can later be loaded and migrated using
+    /// the `load` method.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The versioned data to save
+    ///
+    /// # Returns
+    ///
+    /// A JSON string with the format: `{"version":"x.y.z","data":{...}}`
+    ///
+    /// # Errors
+    ///
+    /// Returns `SerializationError` if the data cannot be serialized to JSON.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let task = TaskV1_0_0 {
+    ///     id: "task-1".to_string(),
+    ///     title: "My Task".to_string(),
+    /// };
+    ///
+    /// let migrator = Migrator::new();
+    /// let json = migrator.save(task)?;
+    /// // json: {"version":"1.0.0","data":{"id":"task-1","title":"My Task"}}
+    /// ```
+    pub fn save<T: Versioned + Serialize>(&self, data: T) -> Result<String, MigrationError> {
+        let wrapper = VersionedWrapper::from_versioned(data);
+
+        serde_json::to_string(&wrapper).map_err(|e| {
+            MigrationError::SerializationError(format!("Failed to serialize data: {}", e))
         })
     }
 }
@@ -509,5 +563,86 @@ mod tests {
         let json = serde_json::to_string(&wrapper).unwrap();
         let result: OtherDomain = migrator.load("entity2", &json).unwrap();
         assert_eq!(result.value, "entity2");
+    }
+
+    #[test]
+    fn test_save() {
+        let migrator = Migrator::new();
+
+        let v1 = V1 {
+            value: "test_save".to_string(),
+        };
+
+        let json = migrator.save(v1).unwrap();
+
+        // Verify JSON contains version and data
+        assert!(json.contains("\"version\""));
+        assert!(json.contains("\"1.0.0\""));
+        assert!(json.contains("\"data\""));
+        assert!(json.contains("\"test_save\""));
+
+        // Verify it can be parsed back
+        let parsed: VersionedWrapper<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.version, "1.0.0");
+    }
+
+    #[test]
+    fn test_save_and_load_roundtrip() {
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path);
+
+        // Save V1 data
+        let v1 = V1 {
+            value: "roundtrip".to_string(),
+        };
+        let json = migrator.save(v1).unwrap();
+
+        // Load and migrate to Domain
+        let domain: Domain = migrator.load("test", &json).unwrap();
+
+        assert_eq!(domain.value, "roundtrip");
+        assert_eq!(domain.count, 0); // Default from V1->V2 migration
+        assert!(domain.enabled); // Default from V2->V3 migration
+    }
+
+    #[test]
+    fn test_save_latest_version() {
+        let migrator = Migrator::new();
+
+        let v3 = V3 {
+            value: "latest".to_string(),
+            count: 42,
+            enabled: false,
+        };
+
+        let json = migrator.save(v3).unwrap();
+
+        // Verify the JSON structure
+        assert!(json.contains("\"version\":\"3.0.0\""));
+        assert!(json.contains("\"value\":\"latest\""));
+        assert!(json.contains("\"count\":42"));
+        assert!(json.contains("\"enabled\":false"));
+    }
+
+    #[test]
+    fn test_save_pretty() {
+        let migrator = Migrator::new();
+
+        let v2 = V2 {
+            value: "pretty".to_string(),
+            count: 10,
+        };
+
+        let json = migrator.save(v2).unwrap();
+
+        // Should be compact JSON (not pretty-printed)
+        assert!(!json.contains('\n'));
+        assert!(json.contains("\"version\":\"2.0.0\""));
     }
 }
