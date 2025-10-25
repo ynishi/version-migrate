@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/version-migrate.svg)](https://crates.io/crates/version-migrate)
 [![Documentation](https://docs.rs/version-migrate/badge.svg)](https://docs.rs/version-migrate)
-[![License](https://img.shields.io/crates/l/version-migrate.svg)](https://github.com/yourusername/version-migrate#license)
+[![License](https://img.shields.io/crates/l/version-migrate.svg)](https://github.com/ynishi/version-migrate#license)
 
 A Rust library for explicit, type-safe schema versioning and migration.
 

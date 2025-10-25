@@ -10,9 +10,10 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Yutaka Nishimura"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/version-migrate"
+repository = "https://github.com/ynishi/version-migrate"
 documentation = "https://docs.rs/version-migrate"
 readme = "README.md"
+description = "Explicit, type-safe schema versioning and migration for Rust"
 keywords = ["migration", "versioning", "schema", "persistence"]
 categories = ["data-structures", "encoding"]
 
