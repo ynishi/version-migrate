@@ -167,20 +167,20 @@ let task: Task = serde_json::from_str(&json)?;
 For complex configuration files with multiple versioned entities, `ConfigMigrator` provides an ORM-like interface for querying and updating specific parts of the JSON without dealing with migration logic.
 
 ```rust
-use version_migrate::{ConfigMigrator, Queryable, Migrator};
+use version_migrate::{ConfigMigrator, Migrator, Versioned};
 
-// Define your domain entity
-#[derive(Serialize, Deserialize)]
+// Define your domain entity with queryable macro
+#[derive(Serialize, Deserialize, Versioned)]
+#[versioned(version = "2.0.0", queryable = true, queryable_key = "task")]
 struct TaskEntity {
     id: String,
     title: String,
     description: Option<String>,
 }
 
-// Mark it as queryable
-impl Queryable for TaskEntity {
-    const ENTITY_NAME: &'static str = "task";
-}
+// That's it! The macro automatically implements:
+// - Versioned trait with version "2.0.0"
+// - Queryable trait with ENTITY_NAME = "task"
 
 // Setup migrator with migration paths (as usual)
 let mut migrator = Migrator::new();
@@ -224,11 +224,16 @@ fs::write("config.json", config.to_string()?)?;
 - **Preserves other fields**: Non-updated parts of the config remain unchanged
 - **Automatic migration**: Old versions are transparently upgraded when queried
 - **Type-safe**: `Queryable` trait ensures correct entity names at compile time
+- **Zero boilerplate**: `queryable = true` macro eliminates manual trait implementation
 
 **Perfect for:**
 - Application configuration files with nested versioned data
 - Session/state management with evolving schemas
 - Multi-tenant systems where different tenants may have different data versions
+
+**Macro options:**
+- `queryable = true`: Auto-implements `Queryable` trait for use with `ConfigMigrator`
+- `queryable_key = "entity_name"`: Specifies the entity name (defaults to lowercased type name)
 
 ### Flat Format Support
 

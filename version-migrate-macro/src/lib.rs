@@ -12,6 +12,10 @@ use syn::{parse_macro_input, DeriveInput, Meta};
 /// - `#[versioned(data_key = "...")]`: Customizes the data field key (optional, default: "data").
 /// - `#[versioned(auto_tag = true)]`: Auto-generates Serialize/Deserialize with version field (optional, default: false).
 ///   When enabled, the version field is automatically inserted during serialization and validated during deserialization.
+/// - `#[versioned(queryable = true)]`: Auto-generates Queryable trait implementation (optional, default: false).
+///   Enables use with ConfigMigrator for ORM-like queries.
+/// - `#[versioned(queryable_key = "...")]`: Customizes the entity name for Queryable (optional).
+///   If not specified, uses the lowercased type name. Only used when `queryable = true`.
 ///
 /// # Examples
 ///
@@ -54,6 +58,20 @@ use syn::{parse_macro_input, DeriveInput, Meta};
 /// let json = serde_json::to_string(&task)?;
 /// // → {"version":"1.0.0","id":"1","title":"Test"}
 /// ```
+///
+/// Queryable for ConfigMigrator:
+/// ```ignore
+/// #[derive(Serialize, Deserialize, Versioned)]
+/// #[versioned(version = "2.0.0", queryable = true, queryable_key = "task")]
+/// pub struct TaskEntity {
+///     pub id: String,
+///     pub title: String,
+///     pub description: Option<String>,
+/// }
+///
+/// // Now TaskEntity implements Queryable automatically
+/// let tasks: Vec<TaskEntity> = config_migrator.query("tasks")?;
+/// ```
 #[proc_macro_derive(Versioned, attributes(versioned))]
 pub fn derive_versioned(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -76,18 +94,24 @@ pub fn derive_versioned(input: TokenStream) -> TokenStream {
         }
     };
 
-    let expanded = if attrs.auto_tag {
+    let mut impls = vec![versioned_impl];
+
+    if attrs.auto_tag {
         // Generate custom Serialize and Deserialize implementations
         let serialize_impl = generate_serialize_impl(&input, &attrs);
         let deserialize_impl = generate_deserialize_impl(&input, &attrs);
+        impls.push(serialize_impl);
+        impls.push(deserialize_impl);
+    }
 
-        quote! {
-            #versioned_impl
-            #serialize_impl
-            #deserialize_impl
-        }
-    } else {
-        versioned_impl
+    if attrs.queryable {
+        // Generate Queryable trait implementation
+        let queryable_impl = generate_queryable_impl(&input, &attrs);
+        impls.push(queryable_impl);
+    }
+
+    let expanded = quote! {
+        #(#impls)*
     };
 
     TokenStream::from(expanded)
@@ -98,6 +122,8 @@ struct VersionedAttributes {
     version_key: String,
     data_key: String,
     auto_tag: bool,
+    queryable: bool,
+    queryable_key: Option<String>,
 }
 
 fn extract_attributes(input: &DeriveInput) -> VersionedAttributes {
@@ -105,6 +131,8 @@ fn extract_attributes(input: &DeriveInput) -> VersionedAttributes {
     let mut version_key = String::from("version");
     let mut data_key = String::from("data");
     let mut auto_tag = false;
+    let mut queryable = false;
+    let mut queryable_key = None;
 
     for attr in &input.attrs {
         if attr.path().is_ident("versioned") {
@@ -116,6 +144,8 @@ fn extract_attributes(input: &DeriveInput) -> VersionedAttributes {
                     &mut version_key,
                     &mut data_key,
                     &mut auto_tag,
+                    &mut queryable,
+                    &mut queryable_key,
                 );
             }
         }
@@ -135,6 +165,8 @@ fn extract_attributes(input: &DeriveInput) -> VersionedAttributes {
         version_key,
         data_key,
         auto_tag,
+        queryable,
+        queryable_key,
     }
 }
 
@@ -144,6 +176,8 @@ fn parse_versioned_attrs(
     version_key: &mut String,
     data_key: &mut String,
     auto_tag: &mut bool,
+    queryable: &mut bool,
+    queryable_key: &mut Option<String>,
 ) {
     // Parse comma-separated key = "value" pairs
     for part in tokens.split(',') {
@@ -157,6 +191,10 @@ fn parse_versioned_attrs(
             *data_key = val;
         } else if let Some(val) = parse_attr_bool_value(part, "auto_tag") {
             *auto_tag = val;
+        } else if let Some(val) = parse_attr_bool_value(part, "queryable") {
+            *queryable = val;
+        } else if let Some(val) = parse_attr_value(part, "queryable_key") {
+            *queryable_key = Some(val);
         }
     }
 }
@@ -189,6 +227,27 @@ fn parse_attr_bool_value(token: &str, key: &str) -> Option<bool> {
         }
     }
     None
+}
+
+fn generate_queryable_impl(
+    input: &DeriveInput,
+    attrs: &VersionedAttributes,
+) -> proc_macro2::TokenStream {
+    let name = &input.ident;
+
+    // Determine the entity name
+    let entity_name = if let Some(ref key) = attrs.queryable_key {
+        key.clone()
+    } else {
+        // Default: use the type name in lowercase
+        name.to_string().to_lowercase()
+    };
+
+    quote! {
+        impl version_migrate::Queryable for #name {
+            const ENTITY_NAME: &'static str = #entity_name;
+        }
+    }
 }
 
 fn generate_serialize_impl(
