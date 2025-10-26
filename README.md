@@ -19,6 +19,7 @@ Applications that persist data locally (e.g., session data, configuration) requi
 - **Robust**: Provides a safe and reliable path to migrate data from any old version to the latest domain model
 - **Separation of Concerns**: The core domain model remains completely unaware of persistence layer versioning details
 - **Developer Experience**: `serde`-like derive macro (`#[derive(Versioned)]`) to minimize boilerplate
+- **Direct Entity Saving**: Save domain entities directly using their latest version with `#[derive(VersionMigrate)]`
 - **Format Flexibility**: Load from any serde-compatible format (JSON, TOML, YAML, etc.)
 - **Flat Format Support**: Both wrapped (`{"version":"..","data":{..}}`) and flat (`{"version":"..","field":..}`) formats
 - **Auto-Tag**: Direct serialization with `serde_json::to_string()` - no `Migrator` required for simple versioning
@@ -132,6 +133,62 @@ let json = migrator.save(task)?;
 
 // Load and automatically migrate to latest version
 let task: TaskEntity = migrator.load("task", &json)?;
+```
+
+### Saving Domain Entities Directly
+
+You can save domain entities directly and they will be automatically serialized using the latest version:
+
+```rust
+use version_migrate::{FromDomain, VersionMigrate};
+
+// Latest versioned type
+#[derive(Serialize, Deserialize, Versioned)]
+#[versioned(version = "1.1.0")]
+struct TaskV1_1_0 {
+    id: String,
+    title: String,
+    description: Option<String>,
+}
+
+// Domain entity with macro
+#[derive(Serialize, Deserialize, VersionMigrate)]
+#[version_migrate(entity = "task", latest = TaskV1_1_0)]
+struct TaskEntity {
+    id: String,
+    title: String,
+    description: Option<String>,
+}
+
+// Define how to convert from Entity to latest version
+impl FromDomain<TaskEntity> for TaskV1_1_0 {
+    fn from_domain(entity: TaskEntity) -> Self {
+        TaskV1_1_0 {
+            id: entity.id,
+            title: entity.title,
+            description: entity.description,
+        }
+    }
+}
+
+// Now you can save entities directly!
+let entity = TaskEntity {
+    id: "1".to_string(),
+    title: "My Task".to_string(),
+    description: Some("Description".to_string()),
+};
+
+// Automatically saved with latest version (1.1.0)
+let json = migrator.save_entity(entity)?;
+// → {"version":"1.1.0","data":{"id":"1","title":"My Task","description":"Description"}}
+
+// Also works with flat format
+let json_flat = migrator.save_entity_flat(entity)?;
+// → {"version":"1.1.0","id":"1","title":"My Task","description":"Description"}
+
+// And with vectors
+let entities = vec![entity1, entity2];
+let json = migrator.save_entity_vec(entities)?;
 ```
 
 ### Auto-Tag: Direct Serialization with Version

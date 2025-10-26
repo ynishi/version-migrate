@@ -136,6 +136,10 @@ pub use version_migrate_macro::Versioned;
 #[doc(inline)]
 pub use version_migrate_macro::Queryable as DeriveQueryable;
 
+// Re-export VersionMigrate derive macro
+#[doc(inline)]
+pub use version_migrate_macro::VersionMigrate;
+
 // Re-export error types
 pub use errors::MigrationError;
 
@@ -201,6 +205,62 @@ pub trait MigratesTo<T: Versioned>: Versioned {
 pub trait IntoDomain<D>: Versioned {
     /// Converts this versioned data into the domain model.
     fn into_domain(self) -> D;
+}
+
+/// Converts a domain model back into a versioned DTO.
+///
+/// This trait should be implemented on versioned DTOs to enable conversion
+/// from the domain model back to the versioned format for serialization.
+///
+/// # Example
+///
+/// ```ignore
+/// impl FromDomain<TaskEntity> for TaskV1_1_0 {
+///     fn from_domain(domain: TaskEntity) -> Self {
+///         TaskV1_1_0 {
+///             id: domain.id,
+///             title: domain.title,
+///             description: domain.description,
+///         }
+///     }
+/// }
+/// ```
+pub trait FromDomain<D>: Versioned + Serialize {
+    /// Converts a domain model into this versioned format.
+    fn from_domain(domain: D) -> Self;
+}
+
+/// Associates a domain entity with its latest versioned representation.
+///
+/// This trait enables automatic saving of domain entities using their latest version.
+/// It should typically be derived using the `#[version_migrate]` attribute macro.
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(Serialize, Deserialize)]
+/// #[version_migrate(entity = "task", latest = TaskV1_1_0)]
+/// struct TaskEntity {
+///     id: String,
+///     title: String,
+///     description: Option<String>,
+/// }
+///
+/// // Now you can save entities directly
+/// let entity = TaskEntity { ... };
+/// let json = migrator.save_entity(entity)?;
+/// ```
+pub trait LatestVersioned: Sized {
+    /// The latest versioned type for this entity.
+    type Latest: Versioned + Serialize + FromDomain<Self>;
+
+    /// The entity name used for migration paths.
+    const ENTITY_NAME: &'static str;
+
+    /// Converts this domain entity into its latest versioned format.
+    fn to_latest(self) -> Self::Latest {
+        Self::Latest::from_domain(self)
+    }
 }
 
 /// Marks a domain type as queryable, associating it with an entity name.

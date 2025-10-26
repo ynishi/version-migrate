@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Meta};
+use syn::{parse_macro_input, DeriveInput, Meta, Type};
 
 /// Derives the `Versioned` trait for a struct.
 ///
@@ -521,6 +521,129 @@ fn generate_deserialize_impl(
                     &[#(#all_field_names),*],
                     StructVisitor,
                 )
+            }
+        }
+    }
+}
+
+/// Derives the `LatestVersioned` trait for a domain entity.
+///
+/// This macro associates a domain entity with its latest versioned representation,
+/// enabling automatic conversion and saving using the latest version.
+///
+/// # Attributes
+///
+/// - `#[version_migrate(entity = "name", latest = Type)]`: Specifies the entity name
+///   and the latest versioned type (both required).
+///
+/// # Requirements
+///
+/// You must manually implement `FromDomain<YourEntity>` on the latest versioned type
+/// to define how to convert from the domain entity to the versioned format.
+///
+/// # Examples
+///
+/// Basic usage:
+/// ```ignore
+/// use version_migrate::{VersionMigrate, FromDomain, Versioned};
+/// use serde::{Serialize, Deserialize};
+///
+/// // Latest versioned type
+/// #[derive(Serialize, Deserialize, Versioned)]
+/// #[versioned(version = "1.1.0")]
+/// struct TaskV1_1_0 {
+///     id: String,
+///     title: String,
+///     description: Option<String>,
+/// }
+///
+/// // Domain entity
+/// #[derive(Serialize, Deserialize, VersionMigrate)]
+/// #[version_migrate(entity = "task", latest = TaskV1_1_0)]
+/// struct TaskEntity {
+///     id: String,
+///     title: String,
+///     description: Option<String>,
+/// }
+///
+/// // Implement FromDomain to define the conversion
+/// impl FromDomain<TaskEntity> for TaskV1_1_0 {
+///     fn from_domain(entity: TaskEntity) -> Self {
+///         TaskV1_1_0 {
+///             id: entity.id,
+///             title: entity.title,
+///             description: entity.description,
+///         }
+///     }
+/// }
+///
+/// // Now you can save entities directly
+/// let entity = TaskEntity {
+///     id: "1".into(),
+///     title: "My Task".into(),
+///     description: Some("Description".into()),
+/// };
+/// let json = migrator.save_entity(entity)?; // Automatically uses TaskV1_1_0
+/// ```
+#[proc_macro_derive(VersionMigrate, attributes(version_migrate))]
+pub fn derive_version_migrate(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    let name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    // Extract attributes
+    let mut entity_name: Option<String> = None;
+    let mut latest_type: Option<Type> = None;
+
+    for attr in &input.attrs {
+        if attr.path().is_ident("version_migrate") {
+            if let Meta::List(meta_list) = &attr.meta {
+                let tokens = meta_list.tokens.to_string();
+                parse_version_migrate_attrs(&tokens, &mut entity_name, &mut latest_type);
+            }
+        }
+    }
+
+    let entity_name = entity_name.unwrap_or_else(|| {
+        panic!("Missing #[version_migrate(entity = \"name\", ...)] attribute");
+    });
+
+    let latest_type = latest_type.unwrap_or_else(|| {
+        panic!("Missing #[version_migrate(..., latest = Type)] attribute");
+    });
+
+    let expanded = quote! {
+        impl #impl_generics version_migrate::LatestVersioned for #name #ty_generics #where_clause {
+            type Latest = #latest_type;
+            const ENTITY_NAME: &'static str = #entity_name;
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+fn parse_version_migrate_attrs(
+    tokens: &str,
+    entity_name: &mut Option<String>,
+    latest_type: &mut Option<Type>,
+) {
+    // Split by commas but preserve type paths
+    let parts: Vec<&str> = tokens.split(',').collect();
+
+    for part in parts {
+        let part = part.trim();
+
+        if let Some(val) = parse_attr_value(part, "entity") {
+            *entity_name = Some(val);
+        } else if let Some(rest) = part.strip_prefix("latest") {
+            let rest = rest.trim();
+            if let Some(rest) = rest.strip_prefix('=') {
+                let type_str = rest.trim();
+                // Parse the type using syn
+                if let Ok(ty) = syn::parse_str::<Type>(type_str) {
+                    *latest_type = Some(ty);
+                }
             }
         }
     }

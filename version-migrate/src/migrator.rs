@@ -845,6 +845,166 @@ impl Migrator {
             ))
         })
     }
+
+    /// Saves a domain entity to a JSON string using its latest versioned format.
+    ///
+    /// This method automatically converts the domain entity to its latest version
+    /// and saves it with version information.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The domain entity to save (must implement `LatestVersioned`)
+    ///
+    /// # Returns
+    ///
+    /// A JSON string with the format: `{"version":"x.y.z","data":{...}}`
+    ///
+    /// # Errors
+    ///
+    /// Returns `SerializationError` if the entity cannot be serialized to JSON.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// #[version_migrate(entity = "task", latest = TaskV1_1_0)]
+    /// struct TaskEntity {
+    ///     id: String,
+    ///     title: String,
+    ///     description: Option<String>,
+    /// }
+    ///
+    /// let entity = TaskEntity {
+    ///     id: "task-1".to_string(),
+    ///     title: "My Task".to_string(),
+    ///     description: Some("Description".to_string()),
+    /// };
+    ///
+    /// let migrator = Migrator::new();
+    /// let json = migrator.save_entity(entity)?;
+    /// // Automatically saved with latest version (1.1.0)
+    /// ```
+    pub fn save_entity<E: crate::LatestVersioned>(
+        &self,
+        entity: E,
+    ) -> Result<String, MigrationError> {
+        let latest = entity.to_latest();
+        self.save(latest)
+    }
+
+    /// Saves a domain entity to a JSON string in flat format using its latest versioned format.
+    ///
+    /// This method automatically converts the domain entity to its latest version
+    /// and saves it with the version field at the same level as data fields.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The domain entity to save (must implement `LatestVersioned`)
+    ///
+    /// # Returns
+    ///
+    /// A JSON string with the format: `{"version":"x.y.z","field1":"value1",...}`
+    ///
+    /// # Errors
+    ///
+    /// Returns `SerializationError` if the entity cannot be serialized to JSON.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// #[version_migrate(entity = "task", latest = TaskV1_1_0)]
+    /// struct TaskEntity {
+    ///     id: String,
+    ///     title: String,
+    ///     description: Option<String>,
+    /// }
+    ///
+    /// let entity = TaskEntity {
+    ///     id: "task-1".to_string(),
+    ///     title: "My Task".to_string(),
+    ///     description: Some("Description".to_string()),
+    /// };
+    ///
+    /// let migrator = Migrator::new();
+    /// let json = migrator.save_entity_flat(entity)?;
+    /// // json: {"version":"1.1.0","id":"task-1","title":"My Task",...}
+    /// ```
+    pub fn save_entity_flat<E: crate::LatestVersioned>(
+        &self,
+        entity: E,
+    ) -> Result<String, MigrationError> {
+        let latest = entity.to_latest();
+        self.save_flat(latest)
+    }
+
+    /// Saves multiple domain entities to a JSON array string using their latest versioned format.
+    ///
+    /// This method automatically converts each domain entity to its latest version
+    /// and saves them as a JSON array.
+    ///
+    /// # Arguments
+    ///
+    /// * `entities` - Vector of domain entities to save
+    ///
+    /// # Returns
+    ///
+    /// A JSON array string where each element has the format: `{"version":"x.y.z","data":{...}}`
+    ///
+    /// # Errors
+    ///
+    /// Returns `SerializationError` if the entities cannot be serialized to JSON.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let entities = vec![
+    ///     TaskEntity { id: "1".into(), title: "Task 1".into(), description: None },
+    ///     TaskEntity { id: "2".into(), title: "Task 2".into(), description: None },
+    /// ];
+    ///
+    /// let json = migrator.save_entity_vec(entities)?;
+    /// ```
+    pub fn save_entity_vec<E: crate::LatestVersioned>(
+        &self,
+        entities: Vec<E>,
+    ) -> Result<String, MigrationError> {
+        let versioned: Vec<E::Latest> = entities.into_iter().map(|e| e.to_latest()).collect();
+        self.save_vec(versioned)
+    }
+
+    /// Saves multiple domain entities to a JSON array string in flat format using their latest versioned format.
+    ///
+    /// This method automatically converts each domain entity to its latest version
+    /// and saves them with version fields at the same level as data fields.
+    ///
+    /// # Arguments
+    ///
+    /// * `entities` - Vector of domain entities to save
+    ///
+    /// # Returns
+    ///
+    /// A JSON array string where each element has the format: `{"version":"x.y.z","field1":"value1",...}`
+    ///
+    /// # Errors
+    ///
+    /// Returns `SerializationError` if the entities cannot be serialized to JSON.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let entities = vec![
+    ///     TaskEntity { id: "1".into(), title: "Task 1".into(), description: None },
+    ///     TaskEntity { id: "2".into(), title: "Task 2".into(), description: None },
+    /// ];
+    ///
+    /// let json = migrator.save_entity_vec_flat(entities)?;
+    /// ```
+    pub fn save_entity_vec_flat<E: crate::LatestVersioned>(
+        &self,
+        entities: Vec<E>,
+    ) -> Result<String, MigrationError> {
+        let versioned: Vec<E::Latest> = entities.into_iter().map(|e| e.to_latest()).collect();
+        self.save_vec_flat(versioned)
+    }
 }
 
 impl Default for Migrator {
