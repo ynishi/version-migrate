@@ -2,7 +2,16 @@
 //!
 //! A library for explicit, type-safe schema versioning and migration.
 //!
-//! ## Example
+//! ## Features
+//!
+//! - **Type-safe migrations**: Define migrations between versions using traits
+//! - **Validation**: Automatic validation of migration paths (circular path detection, version ordering)
+//! - **Multi-format support**: Load from JSON, TOML, YAML, or any serde-compatible format
+//! - **Vec support**: Migrate collections of versioned entities
+//! - **Hierarchical structures**: Support for nested versioned entities
+//! - **Async migrations**: Optional async support for I/O-heavy migrations
+//!
+//! ## Basic Example
 //!
 //! ```ignore
 //! use version_migrate::{Versioned, MigratesTo, IntoDomain, Migrator};
@@ -52,6 +61,66 @@
 //!     }
 //! }
 //! ```
+//!
+//! ## Working with Collections (Vec)
+//!
+//! ```ignore
+//! // Save multiple versioned entities
+//! let tasks = vec![
+//!     TaskV1_0_0 { id: "1".into(), title: "Task 1".into() },
+//!     TaskV1_0_0 { id: "2".into(), title: "Task 2".into() },
+//! ];
+//! let json = migrator.save_vec(tasks)?;
+//!
+//! // Load and migrate multiple entities
+//! let domains: Vec<TaskEntity> = migrator.load_vec("task", &json)?;
+//! ```
+//!
+//! ## Hierarchical Structures
+//!
+//! For complex configurations with nested versioned entities:
+//!
+//! ```ignore
+//! #[derive(Serialize, Deserialize, Versioned)]
+//! #[versioned(version = "1.0.0")]
+//! struct ConfigV1 {
+//!     setting: SettingV1,
+//!     items: Vec<ItemV1>,
+//! }
+//!
+//! #[derive(Serialize, Deserialize, Versioned)]
+//! #[versioned(version = "2.0.0")]
+//! struct ConfigV2 {
+//!     setting: SettingV2,
+//!     items: Vec<ItemV2>,
+//! }
+//!
+//! impl MigratesTo<ConfigV2> for ConfigV1 {
+//!     fn migrate(self) -> ConfigV2 {
+//!         ConfigV2 {
+//!             // Migrate nested entities
+//!             setting: self.setting.migrate(),
+//!             items: self.items.into_iter()
+//!                 .map(|item| item.migrate())
+//!                 .collect(),
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! ## Design Philosophy
+//!
+//! This library follows the **explicit versioning** approach:
+//!
+//! - Each version has its own type (V1, V2, V3, etc.)
+//! - Migration logic is explicit and testable
+//! - Version changes are tracked in code
+//! - Root-level versioning ensures consistency
+//!
+//! This differs from ProtoBuf's "append-only" approach but allows for:
+//! - Schema refactoring and cleanup
+//! - Type-safe migration paths
+//! - Clear version history in code
 
 use serde::{Deserialize, Serialize};
 
@@ -74,9 +143,32 @@ pub use async_trait::async_trait;
 ///
 /// This trait marks a type as representing a specific version of a data schema.
 /// It should be derived using `#[derive(Versioned)]` along with the `#[versioned(version = "x.y.z")]` attribute.
+///
+/// # Custom Keys
+///
+/// You can customize the serialization keys:
+///
+/// ```ignore
+/// #[derive(Versioned)]
+/// #[versioned(
+///     version = "1.0.0",
+///     version_key = "schema_version",
+///     data_key = "payload"
+/// )]
+/// struct Task { ... }
+/// // Serializes to: {"schema_version":"1.0.0","payload":{...}}
+/// ```
 pub trait Versioned {
     /// The semantic version of this schema.
     const VERSION: &'static str;
+
+    /// The key name for the version field in serialized data.
+    /// Defaults to "version".
+    const VERSION_KEY: &'static str = "version";
+
+    /// The key name for the data field in serialized data.
+    /// Defaults to "data".
+    const DATA_KEY: &'static str = "data";
 }
 
 /// Defines explicit migration logic from one version to another.

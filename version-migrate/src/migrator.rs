@@ -1,7 +1,7 @@
 //! Migration manager and builder pattern for defining type-safe migration paths.
 
 use crate::errors::MigrationError;
-use crate::{IntoDomain, MigratesTo, Versioned, VersionedWrapper};
+use crate::{IntoDomain, MigratesTo, Versioned};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -15,11 +15,19 @@ struct EntityMigrationPath {
     steps: HashMap<String, MigrationFn>,
     /// The final conversion to domain model
     finalize: Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError>>,
+    /// Ordered list of versions in the migration path
+    versions: Vec<String>,
+    /// The key name for version field in serialized data
+    version_key: String,
+    /// The key name for data field in serialized data
+    data_key: String,
 }
 
 /// The migration manager that orchestrates all migrations.
 pub struct Migrator {
     paths: HashMap<String, EntityMigrationPath>,
+    default_version_key: Option<String>,
+    default_data_key: Option<String>,
 }
 
 impl Migrator {
@@ -27,7 +35,23 @@ impl Migrator {
     pub fn new() -> Self {
         Self {
             paths: HashMap::new(),
+            default_version_key: None,
+            default_data_key: None,
         }
+    }
+
+    /// Creates a builder for configuring the migrator.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let migrator = Migrator::builder()
+    ///     .default_version_key("schema_version")
+    ///     .default_data_key("payload")
+    ///     .build();
+    /// ```
+    pub fn builder() -> MigratorBuilder {
+        MigratorBuilder::new()
     }
 
     /// Starts defining a migration path for an entity.
@@ -46,7 +70,27 @@ impl Migrator {
     /// Returns an error if validation fails.
     pub fn register<D>(&mut self, path: MigrationPath<D>) -> Result<(), MigrationError> {
         Self::validate_migration_path(&path.entity, &path.versions)?;
-        self.paths.insert(path.entity, path.inner);
+
+        // Resolve key priority: Path custom > Migrator default > EntityPath (trait constants)
+        let version_key = path
+            .custom_version_key
+            .or_else(|| self.default_version_key.clone())
+            .unwrap_or_else(|| path.inner.version_key.clone());
+
+        let data_key = path
+            .custom_data_key
+            .or_else(|| self.default_data_key.clone())
+            .unwrap_or_else(|| path.inner.data_key.clone());
+
+        let final_path = EntityMigrationPath {
+            steps: path.inner.steps,
+            finalize: path.inner.finalize,
+            versions: path.versions,
+            version_key,
+            data_key,
+        };
+
+        self.paths.insert(path.entity, final_path);
         Ok(())
     }
 
@@ -152,35 +196,60 @@ impl Migrator {
             ))
         })?;
 
-        // First, deserialize the wrapper to get the version
-        let wrapper: VersionedWrapper<serde_json::Value> =
-            serde_json::from_value(value).map_err(|e| {
-                MigrationError::DeserializationError(format!(
-                    "Failed to parse VersionedWrapper: {}",
-                    e
-                ))
-            })?;
-
         // Get the migration path for this entity
         let path = self
             .paths
             .get(entity)
             .ok_or_else(|| MigrationError::EntityNotFound(entity.to_string()))?;
 
-        // Start migrating
-        let mut current_version = wrapper.version.clone();
-        let mut current_data = wrapper.data;
+        let version_key = &path.version_key;
+        let data_key = &path.data_key;
+
+        // Extract version and data using custom keys
+        let obj = value.as_object().ok_or_else(|| {
+            MigrationError::DeserializationError(
+                "Expected object with version and data fields".to_string(),
+            )
+        })?;
+
+        let current_version = obj
+            .get(version_key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                MigrationError::DeserializationError(format!(
+                    "Missing or invalid '{}' field",
+                    version_key
+                ))
+            })?
+            .to_string();
+
+        let mut current_data = obj
+            .get(data_key)
+            .ok_or_else(|| {
+                MigrationError::DeserializationError(format!("Missing '{}' field", data_key))
+            })?
+            .clone();
+
+        let mut current_version = current_version;
 
         // Apply migration steps until we reach a version with no further steps
-        while let Some(migrate_fn) = path.steps.get(&current_version) {
-            current_data = migrate_fn(current_data)?;
-            // Extract the new version from the migrated data
-            // This assumes the data is always wrapped in a VersionedWrapper
-            if let Ok(wrapped) =
-                serde_json::from_value::<VersionedWrapper<serde_json::Value>>(current_data.clone())
-            {
-                current_version = wrapped.version;
-                current_data = wrapped.data;
+        loop {
+            if let Some(migrate_fn) = path.steps.get(&current_version) {
+                // Migration function returns raw value, no wrapping
+                current_data = migrate_fn(current_data.clone())?;
+
+                // Update version to the next step
+                // Find the next version in the path
+                let current_idx = path.versions.iter().position(|v| v == &current_version);
+                if let Some(idx) = current_idx {
+                    if idx + 1 < path.versions.len() {
+                        current_version = path.versions[idx + 1].clone();
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
             } else {
                 break;
             }
@@ -259,10 +328,174 @@ impl Migrator {
     /// // json: {"version":"1.0.0","data":{"id":"task-1","title":"My Task"}}
     /// ```
     pub fn save<T: Versioned + Serialize>(&self, data: T) -> Result<String, MigrationError> {
-        let wrapper = VersionedWrapper::from_versioned(data);
+        // Use custom keys from the type's Versioned trait
+        let version_key = T::VERSION_KEY;
+        let data_key = T::DATA_KEY;
 
-        serde_json::to_string(&wrapper).map_err(|e| {
+        // Serialize the data
+        let data_value = serde_json::to_value(&data).map_err(|e| {
             MigrationError::SerializationError(format!("Failed to serialize data: {}", e))
+        })?;
+
+        // Build the wrapper with custom keys
+        let mut map = serde_json::Map::new();
+        map.insert(
+            version_key.to_string(),
+            serde_json::Value::String(T::VERSION.to_string()),
+        );
+        map.insert(data_key.to_string(), data_value);
+
+        serde_json::to_string(&map).map_err(|e| {
+            MigrationError::SerializationError(format!("Failed to serialize wrapper: {}", e))
+        })
+    }
+
+    /// Loads and migrates multiple entities from any serde-compatible format.
+    ///
+    /// This is the generic version that accepts any type implementing `Serialize`.
+    /// For JSON arrays, use the convenience method `load_vec` instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The entity name used when registering the migration path
+    /// * `data` - Array of versioned data in any serde-compatible format
+    ///
+    /// # Returns
+    ///
+    /// A vector of migrated data as domain model types
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The data cannot be converted to the internal format
+    /// - The entity is not registered
+    /// - Any migration step fails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Load from TOML array
+    /// let toml_array: Vec<toml::Value> = /* ... */;
+    /// let domains: Vec<TaskEntity> = migrator.load_vec_from("task", toml_array)?;
+    ///
+    /// // Load from JSON Value array
+    /// let json_array: Vec<serde_json::Value> = /* ... */;
+    /// let domains: Vec<TaskEntity> = migrator.load_vec_from("task", json_array)?;
+    /// ```
+    pub fn load_vec_from<D, T>(&self, entity: &str, data: Vec<T>) -> Result<Vec<D>, MigrationError>
+    where
+        D: DeserializeOwned,
+        T: Serialize,
+    {
+        data.into_iter()
+            .map(|item| self.load_from(entity, item))
+            .collect()
+    }
+
+    /// Loads and migrates multiple entities from a JSON array string.
+    ///
+    /// This is a convenience method for the common case of loading from a JSON array.
+    /// For other formats, use `load_vec_from` instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The entity name used when registering the migration path
+    /// * `json` - A JSON array string containing versioned data
+    ///
+    /// # Returns
+    ///
+    /// A vector of migrated data as domain model types
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The JSON cannot be parsed
+    /// - The entity is not registered
+    /// - Any migration step fails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let json = r#"[
+    ///     {"version":"1.0.0","data":{"id":"task-1","title":"Task 1"}},
+    ///     {"version":"1.0.0","data":{"id":"task-2","title":"Task 2"}}
+    /// ]"#;
+    /// let domains: Vec<TaskEntity> = migrator.load_vec("task", json)?;
+    /// ```
+    pub fn load_vec<D: DeserializeOwned>(
+        &self,
+        entity: &str,
+        json: &str,
+    ) -> Result<Vec<D>, MigrationError> {
+        let data: Vec<serde_json::Value> = serde_json::from_str(json).map_err(|e| {
+            MigrationError::DeserializationError(format!("Failed to parse JSON array: {}", e))
+        })?;
+        self.load_vec_from(entity, data)
+    }
+
+    /// Saves multiple versioned entities to a JSON array string.
+    ///
+    /// This method wraps each item with its version information and serializes
+    /// them as a JSON array. The resulting JSON can later be loaded and migrated
+    /// using the `load_vec` method.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Vector of versioned data to save
+    ///
+    /// # Returns
+    ///
+    /// A JSON array string where each element has the format: `{"version":"x.y.z","data":{...}}`
+    ///
+    /// # Errors
+    ///
+    /// Returns `SerializationError` if the data cannot be serialized to JSON.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let tasks = vec![
+    ///     TaskV1_0_0 {
+    ///         id: "task-1".to_string(),
+    ///         title: "Task 1".to_string(),
+    ///     },
+    ///     TaskV1_0_0 {
+    ///         id: "task-2".to_string(),
+    ///         title: "Task 2".to_string(),
+    ///     },
+    /// ];
+    ///
+    /// let migrator = Migrator::new();
+    /// let json = migrator.save_vec(tasks)?;
+    /// // json: [{"version":"1.0.0","data":{"id":"task-1",...}}, ...]
+    /// ```
+    pub fn save_vec<T: Versioned + Serialize>(
+        &self,
+        data: Vec<T>,
+    ) -> Result<String, MigrationError> {
+        let version_key = T::VERSION_KEY;
+        let data_key = T::DATA_KEY;
+
+        let wrappers: Result<Vec<serde_json::Value>, MigrationError> = data
+            .into_iter()
+            .map(|item| {
+                let data_value = serde_json::to_value(&item).map_err(|e| {
+                    MigrationError::SerializationError(format!("Failed to serialize item: {}", e))
+                })?;
+
+                let mut map = serde_json::Map::new();
+                map.insert(
+                    version_key.to_string(),
+                    serde_json::Value::String(T::VERSION.to_string()),
+                );
+                map.insert(data_key.to_string(), data_value);
+
+                Ok(serde_json::Value::Object(map))
+            })
+            .collect();
+
+        serde_json::to_string(&wrappers?).map_err(|e| {
+            MigrationError::SerializationError(format!("Failed to serialize data array: {}", e))
         })
     }
 }
@@ -270,6 +503,50 @@ impl Migrator {
 impl Default for Migrator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Builder for configuring a `Migrator` with default settings.
+pub struct MigratorBuilder {
+    default_version_key: Option<String>,
+    default_data_key: Option<String>,
+}
+
+impl MigratorBuilder {
+    pub(crate) fn new() -> Self {
+        Self {
+            default_version_key: None,
+            default_data_key: None,
+        }
+    }
+
+    /// Sets the default version key for all entities.
+    ///
+    /// This key will be used unless overridden by:
+    /// - The entity's `MigrationPath` via `with_keys()`
+    /// - The type's `Versioned` trait constants
+    pub fn default_version_key(mut self, key: impl Into<String>) -> Self {
+        self.default_version_key = Some(key.into());
+        self
+    }
+
+    /// Sets the default data key for all entities.
+    ///
+    /// This key will be used unless overridden by:
+    /// - The entity's `MigrationPath` via `with_keys()`
+    /// - The type's `Versioned` trait constants
+    pub fn default_data_key(mut self, key: impl Into<String>) -> Self {
+        self.default_data_key = Some(key.into());
+        self
+    }
+
+    /// Builds the `Migrator` with the configured defaults.
+    pub fn build(self) -> Migrator {
+        Migrator {
+            paths: HashMap::new(),
+            default_version_key: self.default_version_key,
+            default_data_key: self.default_data_key,
+        }
     }
 }
 
@@ -287,6 +564,10 @@ pub struct MigrationPathBuilder<State> {
     entity: String,
     steps: HashMap<String, MigrationFn>,
     versions: Vec<String>,
+    version_key: String,
+    data_key: String,
+    custom_version_key: Option<String>,
+    custom_data_key: Option<String>,
     _state: PhantomData<State>,
 }
 
@@ -296,8 +577,34 @@ impl MigrationPathBuilder<Start> {
             entity,
             steps: HashMap::new(),
             versions: Vec::new(),
+            version_key: String::from("version"),
+            data_key: String::from("data"),
+            custom_version_key: None,
+            custom_data_key: None,
             _state: PhantomData,
         }
+    }
+
+    /// Overrides the version and data keys for this migration path.
+    ///
+    /// This takes precedence over both the Migrator's defaults and the type's trait constants.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// Migrator::define("task")
+    ///     .with_keys("custom_version", "custom_data")
+    ///     .from::<TaskV1>()
+    ///     .into::<TaskDomain>();
+    /// ```
+    pub fn with_keys(
+        mut self,
+        version_key: impl Into<String>,
+        data_key: impl Into<String>,
+    ) -> Self {
+        self.custom_version_key = Some(version_key.into());
+        self.custom_data_key = Some(data_key.into());
+        self
     }
 
     /// Sets the starting version for migrations.
@@ -309,6 +616,10 @@ impl MigrationPathBuilder<Start> {
             entity: self.entity,
             steps: self.steps,
             versions,
+            version_key: V::VERSION_KEY.to_string(),
+            data_key: V::DATA_KEY.to_string(),
+            custom_version_key: self.custom_version_key,
+            custom_data_key: self.custom_data_key,
             _state: PhantomData,
         }
     }
@@ -335,9 +646,9 @@ where
             })?;
 
             let to_value = from_value.migrate();
-            let wrapped = VersionedWrapper::from_versioned(to_value);
 
-            serde_json::to_value(wrapped).map_err(|e| MigrationError::MigrationStepFailed {
+            // Return the raw migrated value without wrapping
+            serde_json::to_value(&to_value).map_err(|e| MigrationError::MigrationStepFailed {
                 from: V::VERSION.to_string(),
                 to: Next::VERSION.to_string(),
                 error: e.to_string(),
@@ -351,6 +662,10 @@ where
             entity: self.entity,
             steps: self.steps,
             versions: self.versions,
+            version_key: self.version_key,
+            data_key: self.data_key,
+            custom_version_key: self.custom_version_key,
+            custom_data_key: self.custom_data_key,
             _state: PhantomData,
         }
     }
@@ -383,8 +698,13 @@ where
             inner: EntityMigrationPath {
                 steps: self.steps,
                 finalize,
+                versions: self.versions.clone(),
+                version_key: self.version_key,
+                data_key: self.data_key,
             },
             versions: self.versions,
+            custom_version_key: self.custom_version_key,
+            custom_data_key: self.custom_data_key,
             _phantom: PhantomData,
         }
     }
@@ -411,9 +731,9 @@ where
             })?;
 
             let to_value = from_value.migrate();
-            let wrapped = VersionedWrapper::from_versioned(to_value);
 
-            serde_json::to_value(wrapped).map_err(|e| MigrationError::MigrationStepFailed {
+            // Return the raw migrated value without wrapping
+            serde_json::to_value(&to_value).map_err(|e| MigrationError::MigrationStepFailed {
                 from: V::VERSION.to_string(),
                 to: Next::VERSION.to_string(),
                 error: e.to_string(),
@@ -427,6 +747,10 @@ where
             entity: self.entity,
             steps: self.steps,
             versions: self.versions,
+            version_key: self.version_key,
+            data_key: self.data_key,
+            custom_version_key: self.custom_version_key,
+            custom_data_key: self.custom_data_key,
             _state: PhantomData,
         }
     }
@@ -459,8 +783,13 @@ where
             inner: EntityMigrationPath {
                 steps: self.steps,
                 finalize,
+                versions: self.versions.clone(),
+                version_key: self.version_key,
+                data_key: self.data_key,
             },
             versions: self.versions,
+            custom_version_key: self.custom_version_key,
+            custom_data_key: self.custom_data_key,
             _phantom: PhantomData,
         }
     }
@@ -472,6 +801,10 @@ pub struct MigrationPath<D> {
     inner: EntityMigrationPath,
     /// List of versions in the migration path for validation
     versions: Vec<String>,
+    /// Custom version key override (takes precedence over Migrator defaults)
+    custom_version_key: Option<String>,
+    /// Custom data key override (takes precedence over Migrator defaults)
+    custom_data_key: Option<String>,
     _phantom: PhantomData<D>,
 }
 
@@ -867,5 +1200,205 @@ mod tests {
 
         let result = Migrator::validate_migration_path(&entity, &versions);
         assert!(result.is_ok());
+    }
+
+    // Tests for Vec operations
+    #[test]
+    fn test_save_vec_and_load_vec() {
+        let migrator = Migrator::new();
+
+        // Save multiple V1 items
+        let items = vec![
+            V1 {
+                value: "item1".to_string(),
+            },
+            V1 {
+                value: "item2".to_string(),
+            },
+            V1 {
+                value: "item3".to_string(),
+            },
+        ];
+
+        let json = migrator.save_vec(items).unwrap();
+
+        // Verify JSON array format
+        assert!(json.starts_with('['));
+        assert!(json.ends_with(']'));
+        assert!(json.contains("\"version\":\"1.0.0\""));
+        assert!(json.contains("item1"));
+        assert!(json.contains("item2"));
+        assert!(json.contains("item3"));
+
+        // Setup migration path
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Load and migrate the array
+        let domains: Vec<Domain> = migrator.load_vec("test", &json).unwrap();
+
+        assert_eq!(domains.len(), 3);
+        assert_eq!(domains[0].value, "item1");
+        assert_eq!(domains[1].value, "item2");
+        assert_eq!(domains[2].value, "item3");
+
+        // All should have default values from migration
+        for domain in &domains {
+            assert_eq!(domain.count, 0);
+            assert!(domain.enabled);
+        }
+    }
+
+    #[test]
+    fn test_load_vec_empty_array() {
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        let json = "[]";
+        let domains: Vec<Domain> = migrator.load_vec("test", json).unwrap();
+
+        assert_eq!(domains.len(), 0);
+    }
+
+    #[test]
+    fn test_load_vec_mixed_versions() {
+        // Setup migration path
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // JSON with mixed versions
+        let json = r#"[
+            {"version":"1.0.0","data":{"value":"v1-item"}},
+            {"version":"2.0.0","data":{"value":"v2-item","count":42}},
+            {"version":"3.0.0","data":{"value":"v3-item","count":99,"enabled":false}}
+        ]"#;
+
+        let domains: Vec<Domain> = migrator.load_vec("test", json).unwrap();
+
+        assert_eq!(domains.len(), 3);
+
+        // V1 item migrated to domain
+        assert_eq!(domains[0].value, "v1-item");
+        assert_eq!(domains[0].count, 0);
+        assert!(domains[0].enabled);
+
+        // V2 item migrated to domain
+        assert_eq!(domains[1].value, "v2-item");
+        assert_eq!(domains[1].count, 42);
+        assert!(domains[1].enabled);
+
+        // V3 item converted to domain
+        assert_eq!(domains[2].value, "v3-item");
+        assert_eq!(domains[2].count, 99);
+        assert!(!domains[2].enabled);
+    }
+
+    #[test]
+    fn test_load_vec_from_json_values() {
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Create Vec<serde_json::Value> directly
+        let values: Vec<serde_json::Value> = vec![
+            serde_json::json!({"version":"1.0.0","data":{"value":"direct1"}}),
+            serde_json::json!({"version":"1.0.0","data":{"value":"direct2"}}),
+        ];
+
+        let domains: Vec<Domain> = migrator.load_vec_from("test", values).unwrap();
+
+        assert_eq!(domains.len(), 2);
+        assert_eq!(domains[0].value, "direct1");
+        assert_eq!(domains[1].value, "direct2");
+    }
+
+    #[test]
+    fn test_save_vec_empty() {
+        let migrator = Migrator::new();
+        let empty: Vec<V1> = vec![];
+
+        let json = migrator.save_vec(empty).unwrap();
+
+        assert_eq!(json, "[]");
+    }
+
+    #[test]
+    fn test_load_vec_invalid_json() {
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        let invalid_json = "{ not an array }";
+        let result: Result<Vec<Domain>, MigrationError> = migrator.load_vec("test", invalid_json);
+
+        assert!(matches!(
+            result,
+            Err(MigrationError::DeserializationError(_))
+        ));
+    }
+
+    #[test]
+    fn test_load_vec_entity_not_found() {
+        let migrator = Migrator::new();
+
+        let json = r#"[{"version":"1.0.0","data":{"value":"test"}}]"#;
+        let result: Result<Vec<Domain>, MigrationError> = migrator.load_vec("unknown", json);
+
+        assert!(matches!(result, Err(MigrationError::EntityNotFound(_))));
+    }
+
+    #[test]
+    fn test_save_vec_latest_version() {
+        let migrator = Migrator::new();
+
+        let items = vec![
+            V3 {
+                value: "latest1".to_string(),
+                count: 10,
+                enabled: true,
+            },
+            V3 {
+                value: "latest2".to_string(),
+                count: 20,
+                enabled: false,
+            },
+        ];
+
+        let json = migrator.save_vec(items).unwrap();
+
+        // Verify structure
+        assert!(json.contains("\"version\":\"3.0.0\""));
+        assert!(json.contains("latest1"));
+        assert!(json.contains("latest2"));
+        assert!(json.contains("\"count\":10"));
+        assert!(json.contains("\"count\":20"));
     }
 }

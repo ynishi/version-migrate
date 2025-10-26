@@ -20,6 +20,9 @@ Applications that persist data locally (e.g., session data, configuration) requi
 - **Separation of Concerns**: The core domain model remains completely unaware of persistence layer versioning details
 - **Developer Experience**: `serde`-like derive macro (`#[derive(Versioned)]`) to minimize boilerplate
 - **Format Flexibility**: Load from any serde-compatible format (JSON, TOML, YAML, etc.)
+- **Vec Support**: Migrate collections of versioned entities with `save_vec` and `load_vec`
+- **Hierarchical Structures**: Support for nested versioned entities with root-level versioning
+- **Custom Serialization Keys**: Customize field names (`version_key`, `data_key`) with three-tier priority (Path > Migrator > Type)
 - **Async Support**: Async traits for migrations requiring I/O operations (database, API calls)
 
 ## Installation
@@ -177,6 +180,191 @@ Migrator::define("task")
     .step::<V3>()      // Must implement MigratesTo<V3> for V2
     .into::<Domain>(); // Must implement IntoDomain<Domain> for V3
 ```
+
+### Working with Collections (Vec)
+
+Migrate multiple entities at once using `save_vec` and `load_vec`:
+
+```rust
+// Save multiple versioned entities
+let tasks = vec![
+    TaskV1_0_0 { id: "1".into(), title: "Task 1".into() },
+    TaskV1_0_0 { id: "2".into(), title: "Task 2".into() },
+    TaskV1_0_0 { id: "3".into(), title: "Task 3".into() },
+];
+let json = migrator.save_vec(tasks)?;
+// → [{"version":"1.0.0","data":{"id":"1",...}}, ...]
+
+// Load and migrate all entities
+let domains: Vec<TaskEntity> = migrator.load_vec("task", &json)?;
+```
+
+The `load_vec_from` method also supports any serde-compatible format:
+
+```rust
+// Load from TOML array
+let toml_array: Vec<toml::Value> = /* ... */;
+let domains: Vec<TaskEntity> = migrator.load_vec_from("task", toml_array)?;
+
+// Load from YAML array
+let yaml_array: Vec<serde_yaml::Value> = /* ... */;
+let domains: Vec<TaskEntity> = migrator.load_vec_from("task", yaml_array)?;
+```
+
+### Hierarchical Structures
+
+For complex configurations with nested versioned entities, define migrations at the root level:
+
+```rust
+// Version 1.0.0 - Nested structure
+#[derive(Serialize, Deserialize, Versioned)]
+#[versioned(version = "1.0.0")]
+struct ConfigV1 {
+    setting: SettingV1,
+    items: Vec<ItemV1>,
+}
+
+// Version 2.0.0 - All nested entities migrate together
+#[derive(Serialize, Deserialize, Versioned)]
+#[versioned(version = "2.0.0")]
+struct ConfigV2 {
+    setting: SettingV2,
+    items: Vec<ItemV2>,
+}
+
+// Migrate the entire hierarchy
+impl MigratesTo<ConfigV2> for ConfigV1 {
+    fn migrate(self) -> ConfigV2 {
+        ConfigV2 {
+            setting: self.setting.migrate(),  // Migrate nested entity
+            items: self.items.into_iter()
+                .map(|item| item.migrate())    // Migrate each item
+                .collect(),
+        }
+    }
+}
+```
+
+**Design Philosophy:**
+- Root-level versioning ensures consistency across nested structures
+- Each version has explicit types (ConfigV1, ConfigV2, etc.)
+- All nested entities migrate together as a unit
+- Migration logic is explicit and testable
+
+This approach differs from ProtoBuf's "append-only" style but enables:
+- Schema refactoring and cleanup
+- Type-safe nested migrations
+- Clear version history in code
+
+### Custom Serialization Keys
+
+For integrating with existing systems that use different field names (e.g., `schema_version` instead of `version`):
+
+```rust
+#[derive(Serialize, Deserialize, Versioned)]
+#[versioned(
+    version = "1.0.0",
+    version_key = "schema_version",
+    data_key = "payload"
+)]
+struct Task {
+    id: String,
+    title: String,
+}
+
+let migrator = Migrator::new();
+let task = Task { id: "1".into(), title: "Task".into() };
+let json = migrator.save(task)?;
+// → {"schema_version":"1.0.0","payload":{"id":"1","title":"Task"}}
+```
+
+**Use cases:**
+- Migrating existing data with custom field names
+- Integrating with external APIs that use specific naming conventions
+- Supporting multiple serialization formats with different requirements
+
+**Default keys:**
+- `version_key`: defaults to `"version"`
+- `data_key`: defaults to `"data"`
+
+### Runtime Key Override
+
+Beyond compile-time customization, you can override serialization keys at runtime with a three-tier priority system:
+
+**Priority (highest to lowest):**
+1. **Path-level** (via `with_keys()`)
+2. **Migrator-level** (via `builder()`)
+3. **Type-level** (via `#[versioned]` macro)
+
+#### Migrator-Level Defaults
+
+Set default keys for all entities using `Migrator::builder()`:
+
+```rust
+let migrator = Migrator::builder()
+    .default_version_key("schema_version")
+    .default_data_key("payload")
+    .build();
+
+// All entities will use these keys unless overridden
+let path = Migrator::define("task")
+    .from::<TaskV1>()
+    .into::<TaskDomain>();
+
+migrator.register(path)?;
+
+// Load with migrator-level keys
+let json = r#"{"schema_version":"1.0.0","payload":{"id":"1","title":"Task"}}"#;
+let task: TaskDomain = migrator.load("task", json)?;
+```
+
+#### Path-Level Override
+
+Override keys for specific migration paths using `with_keys()`:
+
+```rust
+let path = Migrator::define("task")
+    .with_keys("custom_ver", "custom_data")
+    .from::<TaskV1>()
+    .step::<TaskV2>()
+    .into::<TaskDomain>();
+
+let mut migrator = Migrator::builder()
+    .default_version_key("default_ver")
+    .default_data_key("default_data")
+    .build();
+
+migrator.register(path)?;
+
+// Path-level keys take precedence over migrator defaults
+let json = r#"{"custom_ver":"1.0.0","custom_data":{"id":"1","title":"Task"}}"#;
+let task: TaskDomain = migrator.load("task", json)?;
+```
+
+#### Priority Example
+
+```rust
+// Type level: version_key = "type_version"
+#[derive(Versioned)]
+#[versioned(version = "1.0.0", version_key = "type_version")]
+struct Task { ... }
+
+// Migrator level overrides type level
+let mut migrator = Migrator::builder()
+    .default_version_key("migrator_version")  // Takes priority
+    .build();
+
+// Path level overrides migrator level
+let path = Migrator::define("task")
+    .with_keys("path_version", "data")  // Highest priority
+    .from::<Task>()
+    .into::<Domain>();
+```
+
+**Use cases:**
+- Integrating multiple external systems with different naming conventions
+- Supporting legacy data formats without changing type definitions
+- Per-entity customization in multi-tenant systems
 
 ### Async Support
 
