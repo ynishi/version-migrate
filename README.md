@@ -27,6 +27,8 @@ Applications that persist data locally (e.g., session data, configuration) requi
 - **Hierarchical Structures**: Support for nested versioned entities with root-level versioning
 - **Custom Serialization Keys**: Customize field names (`version_key`, `data_key`) with three-tier priority (Path > Migrator > Type)
 - **Async Support**: Async traits for migrations requiring I/O operations (database, API calls)
+- **File Storage with ACID**: Atomic file operations with retry logic, format conversion (TOML/JSON), and automatic cleanup
+- **Platform-Agnostic Paths**: Unified path management across Linux, macOS, Windows with customizable strategies (System/Xdg/CustomBase)
 
 ## Installation
 
@@ -600,6 +602,158 @@ match migrator.load("task", json) {
     Err(e) => eprintln!("Migration failed: {}", e),
 }
 ```
+
+### File Storage with ACID Guarantees
+
+`FileStorage` provides atomic file operations with ACID guarantees for persistent configuration:
+
+```rust
+use version_migrate::{FileStorage, FileStorageStrategy, FormatStrategy, LoadBehavior};
+
+// Configure storage strategy
+let strategy = FileStorageStrategy::default()
+    .with_format(FormatStrategy::Toml)  // or Json
+    .with_retry_count(3)
+    .with_load_behavior(LoadBehavior::CreateIfMissing);
+
+// Create storage (automatically loads from file if exists)
+let mut storage = FileStorage::new(
+    PathBuf::from("/path/to/config.toml"),
+    migrator,
+    strategy
+)?;
+
+// Query and update with automatic migration
+let tasks: Vec<TaskEntity> = storage.query("tasks")?;
+storage.update_and_save("tasks", updated_tasks)?;
+```
+
+**Features:**
+- **Atomicity**: Temporary file + atomic rename ensures all-or-nothing updates
+- **Retry Logic**: Configurable retry count for rename operations (default: 3)
+- **Format Support**: TOML or JSON with automatic conversion
+- **Load Strategies**: Create empty config if missing, or return error
+- **Cleanup**: Automatic cleanup of temporary files (best effort)
+
+### Platform-Agnostic Path Management
+
+`AppPaths` provides unified path resolution across platforms:
+
+```rust
+use version_migrate::{AppPaths, PathStrategy};
+
+// Use OS-standard directories (default)
+let paths = AppPaths::new("myapp");
+// Linux:   ~/.config/myapp
+// macOS:   ~/Library/Application Support/myapp
+// Windows: %APPDATA%\myapp
+
+// Force XDG on all platforms (for consistency)
+let paths = AppPaths::new("myapp")
+    .config_strategy(PathStrategy::Xdg)
+    .data_strategy(PathStrategy::Xdg);
+// All platforms: ~/.config/myapp, ~/.local/share/myapp
+
+// Use custom base (useful for testing)
+let paths = AppPaths::new("myapp")
+    .config_strategy(PathStrategy::CustomBase("/opt/myapp".into()));
+```
+
+**Path Methods:**
+```rust
+// Get directory paths (creates if missing)
+let config_dir = paths.config_dir()?;   // ~/.config/myapp
+let data_dir = paths.data_dir()?;       // ~/.local/share/myapp
+
+// Get file paths (creates parent directory)
+let config_file = paths.config_file("config.toml")?;
+let cache_file = paths.data_file("cache.db")?;
+```
+
+### Complete Example: Persistent Configuration
+
+Combining `FileStorage` and `AppPaths` for production use:
+
+```rust
+use version_migrate::{
+    AppPaths, PathStrategy, FileStorage, FileStorageStrategy,
+    Migrator, Queryable
+};
+
+// Define your entity with Queryable
+#[derive(Queryable)]
+#[queryable(entity = "task")]
+struct TaskEntity {
+    id: String,
+    title: String,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Setup path management (XDG for cross-platform consistency)
+    let paths = AppPaths::new("myapp")
+        .config_strategy(PathStrategy::Xdg);
+
+    // 2. Setup migrator
+    let task_path = Migrator::define("task")
+        .from::<TaskV1_0_0>()
+        .step::<TaskV1_1_0>()
+        .into::<TaskEntity>();
+
+    let mut migrator = Migrator::new();
+    migrator.register(task_path)?;
+
+    // 3. Create storage with automatic loading
+    let config_path = paths.config_file("config.toml")?;
+    let mut storage = FileStorage::new(
+        config_path,
+        migrator,
+        FileStorageStrategy::default()
+    )?;
+
+    // 4. Use storage
+    let tasks: Vec<TaskEntity> = storage.query("tasks")?;
+    println!("Loaded {} tasks", tasks.len());
+
+    // 5. Update and save atomically
+    storage.update_and_save("tasks", updated_tasks)?;
+
+    Ok(())
+}
+```
+
+**Testing with Temporary Directories:**
+
+```rust
+use tempfile::TempDir;
+
+#[test]
+fn test_config_persistence() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Use CustomBase strategy to avoid touching real home directory
+    let paths = AppPaths::new("myapp")
+        .config_strategy(PathStrategy::CustomBase(temp_dir.path().into()));
+
+    let config_path = paths.config_file("test.toml").unwrap();
+    let mut storage = FileStorage::new(
+        config_path,
+        setup_migrator(),
+        FileStorageStrategy::default()
+    ).unwrap();
+
+    // Test operations...
+    storage.update_and_save("tasks", test_tasks).unwrap();
+
+    // Verify persistence...
+    let loaded: Vec<TaskEntity> = storage.query("tasks").unwrap();
+    assert_eq!(loaded.len(), test_tasks.len());
+}
+```
+
+**Important Notes:**
+- **Production**: Use `PathStrategy::System` or `Xdg` for real user directories
+- **Testing**: Use `PathStrategy::CustomBase` with `tempfile::TempDir` to avoid polluting home directory
+- **TOML vs JSON**: TOML is more human-readable; JSON is more compact
 
 ## Architecture
 
