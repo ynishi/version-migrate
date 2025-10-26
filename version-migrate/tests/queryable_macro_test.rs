@@ -59,7 +59,12 @@ fn test_multiple_entities_with_different_keys() {
 
 // Test combining auto_tag and queryable
 #[derive(Versioned)]
-#[versioned(version = "1.0.0", auto_tag = true, queryable = true, queryable_key = "combo")]
+#[versioned(
+    version = "1.0.0",
+    auto_tag = true,
+    queryable = true,
+    queryable_key = "combo"
+)]
 struct ComboEntity {
     id: String,
     value: String,
