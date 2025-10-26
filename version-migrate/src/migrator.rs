@@ -9,6 +9,12 @@ use std::marker::PhantomData;
 
 type MigrationFn = Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError>>;
 
+/// Type-erased function for saving domain entities
+type DomainSaveFn =
+    Box<dyn Fn(serde_json::Value, &str, &str) -> Result<String, MigrationError> + Send + Sync>;
+type DomainSaveFlatFn =
+    Box<dyn Fn(serde_json::Value, &str) -> Result<String, MigrationError> + Send + Sync>;
+
 /// A registered migration path for a specific entity type.
 struct EntityMigrationPath {
     /// Maps version -> migration function to next version
@@ -23,11 +29,18 @@ struct EntityMigrationPath {
     data_key: String,
 }
 
+/// Type-erased functions for saving domain entities by entity name
+struct DomainSavers {
+    save_fn: DomainSaveFn,
+    save_flat_fn: DomainSaveFlatFn,
+}
+
 /// The migration manager that orchestrates all migrations.
 pub struct Migrator {
     paths: HashMap<String, EntityMigrationPath>,
     default_version_key: Option<String>,
     default_data_key: Option<String>,
+    domain_savers: HashMap<String, DomainSavers>,
 }
 
 impl Migrator {
@@ -37,6 +50,7 @@ impl Migrator {
             paths: HashMap::new(),
             default_version_key: None,
             default_data_key: None,
+            domain_savers: HashMap::new(),
         }
     }
 
@@ -94,6 +108,7 @@ impl Migrator {
             .or_else(|| self.default_data_key.clone())
             .unwrap_or_else(|| path.inner.data_key.clone());
 
+        let entity_name = path.entity.clone();
         let final_path = EntityMigrationPath {
             steps: path.inner.steps,
             finalize: path.inner.finalize,
@@ -103,6 +118,18 @@ impl Migrator {
         };
 
         self.paths.insert(path.entity, final_path);
+
+        // Register domain savers if available
+        if let (Some(save_fn), Some(save_flat_fn)) = (path.save_fn, path.save_flat_fn) {
+            self.domain_savers.insert(
+                entity_name,
+                DomainSavers {
+                    save_fn,
+                    save_flat_fn,
+                },
+            );
+        }
+
         Ok(())
     }
 
@@ -1005,6 +1032,116 @@ impl Migrator {
         let versioned: Vec<E::Latest> = entities.into_iter().map(|e| e.to_latest()).collect();
         self.save_vec_flat(versioned)
     }
+
+    /// Saves a domain entity to a JSON string using its latest versioned format, by entity name.
+    ///
+    /// This method works without requiring the `VersionMigrate` macro on the entity type.
+    /// Instead, it uses the save function registered during `register()` via `into_with_save()`.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity_name` - The entity name used when registering the migration path
+    /// * `entity` - The domain entity to save (must be Serialize)
+    ///
+    /// # Returns
+    ///
+    /// A JSON string with the format: `{"version":"x.y.z","data":{...}}`
+    ///
+    /// # Errors
+    ///
+    /// Returns `MigrationPathNotDefined` if the entity is not registered with save support.
+    /// Returns `SerializationError` if the entity cannot be serialized.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// impl FromDomain<TaskEntity> for TaskV1_1_0 {
+    ///     fn from_domain(entity: TaskEntity) -> Self { ... }
+    /// }
+    ///
+    /// let path = Migrator::define("task")
+    ///     .from::<TaskV1_0_0>()
+    ///     .step::<TaskV1_1_0>()
+    ///     .into_with_save::<TaskEntity>();
+    ///
+    /// migrator.register(path)?;
+    ///
+    /// let entity = TaskEntity { ... };
+    /// let json = migrator.save_domain("task", entity)?;
+    /// // → {"version":"1.1.0","data":{"id":"1","title":"My Task",...}}
+    /// ```
+    pub fn save_domain<T: Serialize>(
+        &self,
+        entity_name: &str,
+        entity: T,
+    ) -> Result<String, MigrationError> {
+        let saver = self.domain_savers.get(entity_name).ok_or_else(|| {
+            MigrationError::EntityNotFound(format!(
+                "Entity '{}' is not registered with domain save support. Use into_with_save() when defining the migration path.",
+                entity_name
+            ))
+        })?;
+
+        // Get version/data keys from registered path
+        let path = self.paths.get(entity_name).ok_or_else(|| {
+            MigrationError::EntityNotFound(format!("Entity '{}' is not registered", entity_name))
+        })?;
+
+        let domain_value = serde_json::to_value(entity).map_err(|e| {
+            MigrationError::SerializationError(format!("Failed to serialize entity: {}", e))
+        })?;
+
+        (saver.save_fn)(domain_value, &path.version_key, &path.data_key)
+    }
+
+    /// Saves a domain entity to a JSON string in flat format using its latest versioned format, by entity name.
+    ///
+    /// This method works without requiring the `VersionMigrate` macro on the entity type.
+    /// The version field is placed at the same level as data fields.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity_name` - The entity name used when registering the migration path
+    /// * `entity` - The domain entity to save (must be Serialize)
+    ///
+    /// # Returns
+    ///
+    /// A JSON string with the format: `{"version":"x.y.z","field1":"value1",...}`
+    ///
+    /// # Errors
+    ///
+    /// Returns `MigrationPathNotDefined` if the entity is not registered with save support.
+    /// Returns `SerializationError` if the entity cannot be serialized.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let json = migrator.save_domain_flat("task", entity)?;
+    /// // → {"version":"1.1.0","id":"1","title":"My Task",...}
+    /// ```
+    pub fn save_domain_flat<T: Serialize>(
+        &self,
+        entity_name: &str,
+        entity: T,
+    ) -> Result<String, MigrationError> {
+        let saver = self.domain_savers.get(entity_name).ok_or_else(|| {
+            MigrationError::EntityNotFound(format!(
+                "Entity '{}' is not registered with domain save support. Use into_with_save() when defining the migration path.",
+                entity_name
+            ))
+        })?;
+
+        // Get version key from registered path
+        let path = self.paths.get(entity_name).ok_or_else(|| {
+            MigrationError::EntityNotFound(format!("Entity '{}' is not registered", entity_name))
+        })?;
+
+        let domain_value = serde_json::to_value(entity).map_err(|e| {
+            MigrationError::SerializationError(format!("Failed to serialize entity: {}", e))
+        })?;
+
+        (saver.save_flat_fn)(domain_value, &path.version_key)
+    }
 }
 
 impl Default for Migrator {
@@ -1053,6 +1190,7 @@ impl MigratorBuilder {
             paths: HashMap::new(),
             default_version_key: self.default_version_key,
             default_data_key: self.default_data_key,
+            domain_savers: HashMap::new(),
         }
     }
 }
@@ -1212,6 +1350,136 @@ where
             versions: self.versions,
             custom_version_key: self.custom_version_key,
             custom_data_key: self.custom_data_key,
+            save_fn: None,
+            save_flat_fn: None,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Finalizes the migration path with conversion to domain model and enables domain entity saving.
+    ///
+    /// This variant registers save functions that allow saving domain entities directly by entity name,
+    /// without needing the `VersionMigrate` macro on the entity type.
+    ///
+    /// # Requirements
+    ///
+    /// The latest versioned type (V) must implement `FromDomain<D>` to convert domain entities
+    /// back to the versioned format for saving.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// impl FromDomain<TaskEntity> for TaskV1_1_0 {
+    ///     fn from_domain(entity: TaskEntity) -> Self {
+    ///         TaskV1_1_0 {
+    ///             id: entity.id,
+    ///             title: entity.title,
+    ///             description: entity.description,
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let path = Migrator::define("task")
+    ///     .from::<TaskV1_0_0>()
+    ///     .step::<TaskV1_1_0>()
+    ///     .into_with_save::<TaskEntity>();
+    ///
+    /// migrator.register(path)?;
+    ///
+    /// // Now you can save by entity name
+    /// let entity = TaskEntity { ... };
+    /// let json = migrator.save_domain("task", entity)?;
+    /// ```
+    pub fn into_with_save<D: DeserializeOwned + Serialize>(self) -> MigrationPath<D>
+    where
+        V: IntoDomain<D> + crate::FromDomain<D>,
+    {
+        let finalize: Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError>> =
+            Box::new(move |value| {
+                let versioned: V = serde_json::from_value(value).map_err(|e| {
+                    MigrationError::DeserializationError(format!(
+                        "Failed to deserialize final version: {}",
+                        e
+                    ))
+                })?;
+
+                let domain = versioned.into_domain();
+
+                serde_json::to_value(domain).map_err(|e| MigrationError::MigrationStepFailed {
+                    from: V::VERSION.to_string(),
+                    to: "domain".to_string(),
+                    error: e.to_string(),
+                })
+            });
+
+        // Create save function for domain entities
+        let version = V::VERSION;
+
+        let save_fn: DomainSaveFn = Box::new(move |domain_value, vkey, dkey| {
+            let domain: D = serde_json::from_value(domain_value).map_err(|e| {
+                MigrationError::DeserializationError(format!("Failed to deserialize domain: {}", e))
+            })?;
+
+            let latest = V::from_domain(domain);
+            let data_value = serde_json::to_value(&latest).map_err(|e| {
+                MigrationError::SerializationError(format!("Failed to serialize latest: {}", e))
+            })?;
+
+            let mut map = serde_json::Map::new();
+            map.insert(
+                vkey.to_string(),
+                serde_json::Value::String(version.to_string()),
+            );
+            map.insert(dkey.to_string(), data_value);
+
+            serde_json::to_string(&map).map_err(|e| {
+                MigrationError::SerializationError(format!("Failed to serialize wrapper: {}", e))
+            })
+        });
+
+        let save_flat_fn: DomainSaveFlatFn = Box::new(move |domain_value, vkey| {
+            let domain: D = serde_json::from_value(domain_value).map_err(|e| {
+                MigrationError::DeserializationError(format!("Failed to deserialize domain: {}", e))
+            })?;
+
+            let latest = V::from_domain(domain);
+            let mut data_value = serde_json::to_value(&latest).map_err(|e| {
+                MigrationError::SerializationError(format!("Failed to serialize latest: {}", e))
+            })?;
+
+            let obj = data_value.as_object_mut().ok_or_else(|| {
+                MigrationError::SerializationError(
+                    "Data must serialize to a JSON object for flat format".to_string(),
+                )
+            })?;
+
+            obj.insert(
+                vkey.to_string(),
+                serde_json::Value::String(version.to_string()),
+            );
+
+            serde_json::to_string(&obj).map_err(|e| {
+                MigrationError::SerializationError(format!(
+                    "Failed to serialize flat format: {}",
+                    e
+                ))
+            })
+        });
+
+        MigrationPath {
+            entity: self.entity,
+            inner: EntityMigrationPath {
+                steps: self.steps,
+                finalize,
+                versions: self.versions.clone(),
+                version_key: self.version_key,
+                data_key: self.data_key,
+            },
+            versions: self.versions,
+            custom_version_key: self.custom_version_key,
+            custom_data_key: self.custom_data_key,
+            save_fn: Some(save_fn),
+            save_flat_fn: Some(save_flat_fn),
             _phantom: PhantomData,
         }
     }
@@ -1297,6 +1565,105 @@ where
             versions: self.versions,
             custom_version_key: self.custom_version_key,
             custom_data_key: self.custom_data_key,
+            save_fn: None,
+            save_flat_fn: None,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Finalizes the migration path with conversion to domain model and enables domain entity saving.
+    ///
+    /// See `MigrationPathBuilder<HasFrom<V>>::into_with_save` for details.
+    pub fn into_with_save<D: DeserializeOwned + Serialize>(self) -> MigrationPath<D>
+    where
+        V: IntoDomain<D> + crate::FromDomain<D>,
+    {
+        let finalize: Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError>> =
+            Box::new(move |value| {
+                let versioned: V = serde_json::from_value(value).map_err(|e| {
+                    MigrationError::DeserializationError(format!(
+                        "Failed to deserialize final version: {}",
+                        e
+                    ))
+                })?;
+
+                let domain = versioned.into_domain();
+
+                serde_json::to_value(domain).map_err(|e| MigrationError::MigrationStepFailed {
+                    from: V::VERSION.to_string(),
+                    to: "domain".to_string(),
+                    error: e.to_string(),
+                })
+            });
+
+        // Create save function for domain entities
+        let version = V::VERSION;
+
+        let save_fn: DomainSaveFn = Box::new(move |domain_value, vkey, dkey| {
+            let domain: D = serde_json::from_value(domain_value).map_err(|e| {
+                MigrationError::DeserializationError(format!("Failed to deserialize domain: {}", e))
+            })?;
+
+            let latest = V::from_domain(domain);
+            let data_value = serde_json::to_value(&latest).map_err(|e| {
+                MigrationError::SerializationError(format!("Failed to serialize latest: {}", e))
+            })?;
+
+            let mut map = serde_json::Map::new();
+            map.insert(
+                vkey.to_string(),
+                serde_json::Value::String(version.to_string()),
+            );
+            map.insert(dkey.to_string(), data_value);
+
+            serde_json::to_string(&map).map_err(|e| {
+                MigrationError::SerializationError(format!("Failed to serialize wrapper: {}", e))
+            })
+        });
+
+        let save_flat_fn: DomainSaveFlatFn = Box::new(move |domain_value, vkey| {
+            let domain: D = serde_json::from_value(domain_value).map_err(|e| {
+                MigrationError::DeserializationError(format!("Failed to deserialize domain: {}", e))
+            })?;
+
+            let latest = V::from_domain(domain);
+            let mut data_value = serde_json::to_value(&latest).map_err(|e| {
+                MigrationError::SerializationError(format!("Failed to serialize latest: {}", e))
+            })?;
+
+            let obj = data_value.as_object_mut().ok_or_else(|| {
+                MigrationError::SerializationError(
+                    "Data must serialize to a JSON object for flat format".to_string(),
+                )
+            })?;
+
+            obj.insert(
+                vkey.to_string(),
+                serde_json::Value::String(version.to_string()),
+            );
+
+            serde_json::to_string(&obj).map_err(|e| {
+                MigrationError::SerializationError(format!(
+                    "Failed to serialize flat format: {}",
+                    e
+                ))
+            })
+        });
+
+        MigrationPath {
+            entity: self.entity,
+            inner: EntityMigrationPath {
+                steps: self.steps,
+                finalize,
+                versions: self.versions.clone(),
+                version_key: self.version_key,
+                data_key: self.data_key,
+            },
+            versions: self.versions,
+            custom_version_key: self.custom_version_key,
+            custom_data_key: self.custom_data_key,
+            save_fn: Some(save_fn),
+            save_flat_fn: Some(save_flat_fn),
             _phantom: PhantomData,
         }
     }
@@ -1312,6 +1679,10 @@ pub struct MigrationPath<D> {
     custom_version_key: Option<String>,
     /// Custom data key override (takes precedence over Migrator defaults)
     custom_data_key: Option<String>,
+    /// Function to save domain entities (if FromDomain is implemented)
+    save_fn: Option<DomainSaveFn>,
+    /// Function to save domain entities in flat format (if FromDomain is implemented)
+    save_flat_fn: Option<DomainSaveFlatFn>,
     _phantom: PhantomData<D>,
 }
 

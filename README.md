@@ -137,7 +137,11 @@ let task: TaskEntity = migrator.load("task", &json)?;
 
 ### Saving Domain Entities Directly
 
-You can save domain entities directly and they will be automatically serialized using the latest version:
+There are two ways to save domain entities directly using their latest version:
+
+#### Option 1: Using `#[derive(VersionMigrate)]` macro
+
+This approach associates the entity type with its latest version at compile time:
 
 ```rust
 use version_migrate::{FromDomain, VersionMigrate};
@@ -190,6 +194,52 @@ let json_flat = migrator.save_entity_flat(entity)?;
 let entities = vec![entity1, entity2];
 let json = migrator.save_entity_vec(entities)?;
 ```
+
+#### Option 2: Using `into_with_save()` (No Macro Required)
+
+This approach avoids circular dependencies between entity and DTO by registering save functions during migration path setup:
+
+```rust
+// Domain entity (no dependency on DTOs!)
+#[derive(Serialize, Deserialize)]
+struct TaskEntity {
+    id: String,
+    title: String,
+    description: Option<String>,
+}
+
+// Implement FromDomain on the DTO side
+impl FromDomain<TaskEntity> for TaskV1_1_0 {
+    fn from_domain(entity: TaskEntity) -> Self {
+        TaskV1_1_0 {
+            id: entity.id,
+            title: entity.title,
+            description: entity.description,
+        }
+    }
+}
+
+// Register with save support using into_with_save()
+let path = Migrator::define("task")
+    .from::<TaskV1_0_0>()
+    .step::<TaskV1_1_0>()
+    .into_with_save::<TaskEntity>();  // ← Enable domain saving
+
+migrator.register(path)?;
+
+// Save by entity name (no VersionMigrate macro needed!)
+let entity = TaskEntity { ... };
+let json = migrator.save_domain("task", entity)?;
+// → {"version":"1.1.0","data":{"id":"1",...}}
+
+// Also works with flat format
+let json = migrator.save_domain_flat("task", entity)?;
+// → {"version":"1.1.0","id":"1",...}
+```
+
+**Choose based on your needs:**
+- **Option 1** (`VersionMigrate` macro): Better when entity and DTOs are in the same module
+- **Option 2** (`into_with_save()`): Better for avoiding circular dependencies between domain and DTO layers
 
 ### Auto-Tag: Direct Serialization with Version
 
