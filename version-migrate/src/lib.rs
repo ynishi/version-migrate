@@ -126,6 +126,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod errors;
 mod migrator;
+pub mod storage;
 
 // Re-export the derive macros
 pub use version_migrate_macro::Versioned;
@@ -139,6 +140,11 @@ pub use errors::MigrationError;
 
 // Re-export migrator types
 pub use migrator::{ConfigMigrator, MigrationPath, Migrator};
+
+// Re-export storage types
+pub use storage::{
+    AtomicWriteConfig, FileStorage, FileStorageStrategy, FormatStrategy, LoadBehavior,
+};
 
 // Re-export async-trait for user convenience
 pub use async_trait::async_trait;

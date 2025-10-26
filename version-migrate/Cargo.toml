@@ -18,8 +18,12 @@ thiserror = { workspace = true }
 semver = { workspace = true }
 async-trait = { workspace = true }
 version-migrate-macro = { version = "0.5.0", path = "../version-migrate-macro" }
+toml = "0.8"
+fs2 = "0.4"
+dirs = "5.0"
 
 [dev-dependencies]
 toml = "0.8"
 serde_yaml = "0.9"
 tokio = { version = "1.0", features = ["macros", "rt", "time"] }
+tempfile = "3.0"

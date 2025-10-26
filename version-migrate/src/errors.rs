@@ -56,6 +56,40 @@ pub enum MigrationError {
         /// The target version.
         to: String,
     },
+
+    /// File I/O error.
+    #[error("File I/O error at '{path}': {error}")]
+    IoError {
+        /// The file path where the error occurred.
+        path: String,
+        /// The underlying I/O error.
+        error: String,
+    },
+
+    /// File locking error.
+    #[error("Failed to acquire file lock for '{path}': {error}")]
+    LockError {
+        /// The file path.
+        path: String,
+        /// The error message.
+        error: String,
+    },
+
+    /// TOML parsing error.
+    #[error("Failed to parse TOML: {0}")]
+    TomlParseError(String),
+
+    /// TOML serialization error.
+    #[error("Failed to serialize to TOML: {0}")]
+    TomlSerializeError(String),
+
+    /// Failed to find home directory.
+    #[error("Cannot determine home directory")]
+    HomeDirNotFound,
+
+    /// Failed to resolve path.
+    #[error("Failed to resolve path: {0}")]
+    PathResolution(String),
 }
 
 #[cfg(test)]
