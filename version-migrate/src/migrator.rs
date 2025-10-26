@@ -233,25 +233,17 @@ impl Migrator {
         let mut current_version = current_version;
 
         // Apply migration steps until we reach a version with no further steps
-        loop {
-            if let Some(migrate_fn) = path.steps.get(&current_version) {
-                // Migration function returns raw value, no wrapping
-                current_data = migrate_fn(current_data.clone())?;
+        while let Some(migrate_fn) = path.steps.get(&current_version) {
+            // Migration function returns raw value, no wrapping
+            current_data = migrate_fn(current_data.clone())?;
 
-                // Update version to the next step
-                // Find the next version in the path
-                let current_idx = path.versions.iter().position(|v| v == &current_version);
-                if let Some(idx) = current_idx {
-                    if idx + 1 < path.versions.len() {
-                        current_version = path.versions[idx + 1].clone();
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
+            // Update version to the next step
+            // Find the next version in the path
+            match path.versions.iter().position(|v| v == &current_version) {
+                Some(idx) if idx + 1 < path.versions.len() => {
+                    current_version = path.versions[idx + 1].clone();
                 }
-            } else {
-                break;
+                _ => break,
             }
         }
 
@@ -409,24 +401,16 @@ impl Migrator {
         let mut current_version = current_version;
 
         // Apply migration steps until we reach a version with no further steps
-        loop {
-            if let Some(migrate_fn) = path.steps.get(&current_version) {
-                // Migration function returns raw value, no wrapping
-                current_data = migrate_fn(current_data.clone())?;
+        while let Some(migrate_fn) = path.steps.get(&current_version) {
+            // Migration function returns raw value, no wrapping
+            current_data = migrate_fn(current_data.clone())?;
 
-                // Update version to the next step
-                let current_idx = path.versions.iter().position(|v| v == &current_version);
-                if let Some(idx) = current_idx {
-                    if idx + 1 < path.versions.len() {
-                        current_version = path.versions[idx + 1].clone();
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
+            // Update version to the next step
+            match path.versions.iter().position(|v| v == &current_version) {
+                Some(idx) if idx + 1 < path.versions.len() => {
+                    current_version = path.versions[idx + 1].clone();
                 }
-            } else {
-                break;
+                _ => break,
             }
         }
 
@@ -698,7 +682,11 @@ impl Migrator {
     /// let toml_array: Vec<toml::Value> = /* ... */;
     /// let domains: Vec<TaskEntity> = migrator.load_vec_flat_from("task", toml_array)?;
     /// ```
-    pub fn load_vec_flat_from<D, T>(&self, entity: &str, data: Vec<T>) -> Result<Vec<D>, MigrationError>
+    pub fn load_vec_flat_from<D, T>(
+        &self,
+        entity: &str,
+        data: Vec<T>,
+    ) -> Result<Vec<D>, MigrationError>
     where
         D: DeserializeOwned,
         T: Serialize,
@@ -839,7 +827,10 @@ impl Migrator {
             .collect();
 
         serde_json::to_string(&flat_items?).map_err(|e| {
-            MigrationError::SerializationError(format!("Failed to serialize flat data array: {}", e))
+            MigrationError::SerializationError(format!(
+                "Failed to serialize flat data array: {}",
+                e
+            ))
         })
     }
 }
