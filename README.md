@@ -167,11 +167,11 @@ let task: Task = serde_json::from_str(&json)?;
 For complex configuration files with multiple versioned entities, `ConfigMigrator` provides an ORM-like interface for querying and updating specific parts of the JSON without dealing with migration logic.
 
 ```rust
-use version_migrate::{ConfigMigrator, Migrator, Versioned};
+use version_migrate::{ConfigMigrator, Migrator, DeriveQueryable as Queryable};
 
-// Define your domain entity with queryable macro
-#[derive(Serialize, Deserialize, Versioned)]
-#[versioned(version = "2.0.0", queryable = true, queryable_key = "task")]
+// Define your domain entity (version-agnostic) with queryable macro
+#[derive(Serialize, Deserialize, Queryable)]
+#[queryable(entity = "task")]
 struct TaskEntity {
     id: String,
     title: String,
@@ -179,8 +179,8 @@ struct TaskEntity {
 }
 
 // That's it! The macro automatically implements:
-// - Versioned trait with version "2.0.0"
 // - Queryable trait with ENTITY_NAME = "task"
+// - No version needed - domain entities are version-agnostic
 
 // Setup migrator with migration paths (as usual)
 let mut migrator = Migrator::new();
@@ -210,7 +210,7 @@ tasks.push(TaskEntity {
     description: None,
 });
 
-// Update config with latest version
+// Update config (version is automatically determined from migration path)
 config.update("tasks", tasks)?;
 
 // Save to file
@@ -219,21 +219,30 @@ fs::write("config.json", config.to_string()?)?;
 ```
 
 **Benefits:**
-- **No version awareness needed**: Work with domain entities, not versioned DTOs
+- **No version awareness needed**: Work with domain entities (version-agnostic), not versioned DTOs
+- **Separation of concerns**: Domain entities implement `Queryable`, versioned DTOs implement `Versioned`
 - **Partial updates**: Only update specific keys in complex JSON structures
 - **Preserves other fields**: Non-updated parts of the config remain unchanged
 - **Automatic migration**: Old versions are transparently upgraded when queried
 - **Type-safe**: `Queryable` trait ensures correct entity names at compile time
-- **Zero boilerplate**: `queryable = true` macro eliminates manual trait implementation
+- **Zero boilerplate**: `#[derive(Queryable)]` macro eliminates manual trait implementation
 
 **Perfect for:**
 - Application configuration files with nested versioned data
 - Session/state management with evolving schemas
 - Multi-tenant systems where different tenants may have different data versions
 
-**Macro options:**
-- `queryable = true`: Auto-implements `Queryable` trait for use with `ConfigMigrator`
-- `queryable_key = "entity_name"`: Specifies the entity name (defaults to lowercased type name)
+**Standalone Queryable Macro:**
+```rust
+#[derive(Queryable)]
+#[queryable(entity = "entity_name")]
+struct DomainEntity { ... }
+
+// Automatically implements:
+impl Queryable for DomainEntity {
+    const ENTITY_NAME: &'static str = "entity_name";
+}
+```
 
 ### Flat Format Support
 

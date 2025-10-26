@@ -250,6 +250,84 @@ fn generate_queryable_impl(
     }
 }
 
+/// Derives the `Queryable` trait for a struct.
+///
+/// This is a standalone macro for domain entities that need to be queryable
+/// via `ConfigMigrator` but don't have version information themselves.
+///
+/// # Attributes
+///
+/// - `#[queryable(entity = "name")]`: Specifies the entity name (required).
+///   This must match the entity name used when registering migration paths.
+///
+/// # Examples
+///
+/// Basic usage:
+/// ```ignore
+/// use version_migrate::Queryable;
+///
+/// #[derive(Queryable)]
+/// #[queryable(entity = "task")]
+/// pub struct TaskEntity {
+///     pub id: String,
+///     pub title: String,
+/// }
+///
+/// // Now can be used with ConfigMigrator
+/// let tasks: Vec<TaskEntity> = config.query("tasks")?;
+/// ```
+///
+/// The entity name must match the Migrator registration:
+/// ```ignore
+/// let path = Migrator::define("task")  // ← This name
+///     .from::<TaskV1>()
+///     .into::<TaskEntity>();
+///
+/// #[derive(Queryable)]
+/// #[queryable(entity = "task")]  // ← Must match
+/// struct TaskEntity { ... }
+/// ```
+#[proc_macro_derive(Queryable, attributes(queryable))]
+pub fn derive_queryable(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    let name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let mut entity_name: Option<String> = None;
+
+    // Extract entity attribute
+    for attr in &input.attrs {
+        if attr.path().is_ident("queryable") {
+            if let Meta::List(meta_list) = &attr.meta {
+                let tokens = meta_list.tokens.to_string();
+                entity_name = parse_entity_attr(&tokens);
+            }
+        }
+    }
+
+    let entity_name = entity_name.unwrap_or_else(|| {
+        panic!("Missing #[queryable(entity = \"name\")] attribute");
+    });
+
+    let expanded = quote! {
+        impl #impl_generics version_migrate::Queryable for #name #ty_generics #where_clause {
+            const ENTITY_NAME: &'static str = #entity_name;
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+fn parse_entity_attr(tokens: &str) -> Option<String> {
+    for part in tokens.split(',') {
+        let part = part.trim();
+        if let Some(val) = parse_attr_value(part, "entity") {
+            return Some(val);
+        }
+    }
+    None
+}
+
 fn generate_serialize_impl(
     input: &DeriveInput,
     attrs: &VersionedAttributes,

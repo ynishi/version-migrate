@@ -127,8 +127,12 @@ use serde::{Deserialize, Serialize};
 pub mod errors;
 mod migrator;
 
-// Re-export the derive macro
+// Re-export the derive macros
 pub use version_migrate_macro::Versioned;
+
+// Re-export Queryable derive macro (same name as trait is OK in Rust)
+#[doc(inline)]
+pub use version_migrate_macro::Queryable as DeriveQueryable;
 
 // Re-export error types
 pub use errors::MigrationError;

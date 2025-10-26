@@ -40,6 +40,18 @@ impl Migrator {
         }
     }
 
+    /// Gets the latest version for a given entity.
+    ///
+    /// # Returns
+    ///
+    /// The latest version string if the entity is registered, `None` otherwise.
+    pub fn get_latest_version(&self, entity: &str) -> Option<&str> {
+        self.paths
+            .get(entity)
+            .and_then(|path| path.versions.last())
+            .map(|v| v.as_str())
+    }
+
     /// Creates a builder for configuring the migrator.
     ///
     /// # Example
@@ -1236,30 +1248,53 @@ impl ConfigMigrator {
 
     /// Updates a specific key in the JSON object with new domain entities.
     ///
-    /// This method serializes the entities with the latest version and updates
-    /// the JSON object in place.
+    /// This method serializes the entities with the latest version (automatically
+    /// determined from the `Queryable` trait) and updates the JSON object in place.
     ///
     /// # Type Parameters
     ///
-    /// - `T`: Must implement `Queryable`, `Versioned`, and `Serialize`.
+    /// - `T`: Must implement `Serialize` and `Queryable`.
     ///
     /// # Errors
     ///
+    /// - Returns `MigrationError::EntityNotFound` if the entity is not registered.
     /// - Returns serialization errors if the data cannot be serialized.
     ///
     /// # Example
     ///
     /// ```ignore
+    /// // Version is automatically determined from the entity's migration path
     /// config.update("tasks", updated_tasks)?;
     /// ```
     pub fn update<T>(&mut self, key: &str, data: Vec<T>) -> Result<(), MigrationError>
     where
-        T: crate::Queryable + crate::Versioned + serde::Serialize,
+        T: serde::Serialize + crate::Queryable,
     {
-        let json = self.migrator.save_vec_flat(data)?;
-        let value: serde_json::Value = serde_json::from_str(&json)
-            .map_err(|e| MigrationError::SerializationError(e.to_string()))?;
-        self.root[key] = value;
+        let entity_name = T::ENTITY_NAME;
+        let latest_version = self
+            .migrator
+            .get_latest_version(entity_name)
+            .ok_or_else(|| MigrationError::EntityNotFound(entity_name.to_string()))?;
+
+        // Serialize each item with version field
+        let items: Vec<serde_json::Value> = data
+            .into_iter()
+            .map(|item| {
+                let mut obj = serde_json::to_value(&item)
+                    .map_err(|e| MigrationError::SerializationError(e.to_string()))?;
+
+                if let Some(obj_map) = obj.as_object_mut() {
+                    obj_map.insert(
+                        "version".to_string(),
+                        serde_json::Value::String(latest_version.to_string()),
+                    );
+                }
+
+                Ok(obj)
+            })
+            .collect::<Result<Vec<_>, MigrationError>>()?;
+
+        self.root[key] = serde_json::Value::Array(items);
         Ok(())
     }
 

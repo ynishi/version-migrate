@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
-use version_migrate::{ConfigMigrator, IntoDomain, MigratesTo, Migrator, Versioned};
+use version_migrate::{
+    ConfigMigrator, DeriveQueryable as Queryable, IntoDomain, MigratesTo, Migrator, Versioned,
+};
 
 // Task V1
 #[derive(Serialize, Deserialize, Versioned)]
@@ -18,9 +20,9 @@ struct TaskV2 {
     description: Option<String>,
 }
 
-// Domain Entity
-#[derive(Debug, PartialEq, Serialize, Deserialize, Clone, Versioned)]
-#[versioned(version = "2.0.0", queryable = true, queryable_key = "task")]
+// Domain Entity (version-agnostic)
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone, Queryable)]
+#[queryable(entity = "task")]
 struct TaskEntity {
     id: String,
     title: String,
