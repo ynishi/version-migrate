@@ -134,7 +134,7 @@ pub use version_migrate_macro::Versioned;
 pub use errors::MigrationError;
 
 // Re-export migrator types
-pub use migrator::{MigrationPath, Migrator};
+pub use migrator::{ConfigMigrator, MigrationPath, Migrator};
 
 // Re-export async-trait for user convenience
 pub use async_trait::async_trait;
@@ -187,6 +187,25 @@ pub trait MigratesTo<T: Versioned>: Versioned {
 pub trait IntoDomain<D>: Versioned {
     /// Converts this versioned data into the domain model.
     fn into_domain(self) -> D;
+}
+
+/// Marks a domain type as queryable, associating it with an entity name.
+///
+/// This trait enables `ConfigMigrator` to automatically determine which entity
+/// path to use when querying or updating data.
+///
+/// # Example
+///
+/// ```ignore
+/// impl Queryable for TaskEntity {
+///     const ENTITY_NAME: &'static str = "task";
+/// }
+///
+/// let tasks: Vec<TaskEntity> = config.query("tasks")?;
+/// ```
+pub trait Queryable {
+    /// The entity name used to look up migration paths in the `Migrator`.
+    const ENTITY_NAME: &'static str;
 }
 
 /// Async version of `MigratesTo` for migrations requiring I/O operations.

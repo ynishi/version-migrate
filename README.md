@@ -21,6 +21,8 @@ Applications that persist data locally (e.g., session data, configuration) requi
 - **Developer Experience**: `serde`-like derive macro (`#[derive(Versioned)]`) to minimize boilerplate
 - **Format Flexibility**: Load from any serde-compatible format (JSON, TOML, YAML, etc.)
 - **Flat Format Support**: Both wrapped (`{"version":"..","data":{..}}`) and flat (`{"version":"..","field":..}`) formats
+- **Auto-Tag**: Direct serialization with `serde_json::to_string()` - no `Migrator` required for simple versioning
+- **ConfigMigrator**: ORM-like interface for partial updates in complex JSON without version concerns
 - **Vec Support**: Migrate collections of versioned entities with `save_vec` and `load_vec`
 - **Hierarchical Structures**: Support for nested versioned entities with root-level versioning
 - **Custom Serialization Keys**: Customize field names (`version_key`, `data_key`) with three-tier priority (Path > Migrator > Type)
@@ -129,6 +131,104 @@ let json = migrator.save(task)?;
 // Load and automatically migrate to latest version
 let task: TaskEntity = migrator.load("task", &json)?;
 ```
+
+### Auto-Tag: Direct Serialization with Version
+
+For cases where you want to use standard `serde_json::to_string()` directly without going through the `Migrator`, you can enable the `auto_tag` option:
+
+```rust
+#[derive(Versioned)]
+#[versioned(version = "1.0.0", auto_tag = true)]
+struct Task {
+    id: String,
+    title: String,
+}
+
+// Now you can use serde directly!
+let task = Task { id: "1".into(), title: "My Task".into() };
+let json = serde_json::to_string(&task)?;
+// → {"version":"1.0.0","id":"1","title":"My Task"}
+
+// Deserialization also works with version validation
+let task: Task = serde_json::from_str(&json)?;
+```
+
+**Key features:**
+- `auto_tag = true` generates custom `Serialize` and `Deserialize` implementations
+- Version field is automatically inserted during serialization
+- Version is validated during deserialization (returns error if mismatch)
+- Works with custom version keys: `#[versioned(version = "1.0.0", version_key = "schema_version", auto_tag = true)]`
+- No need for `Migrator` if you just want versioned serialization
+
+**Note:** When `auto_tag = true`, you don't need `#[derive(Serialize, Deserialize)]` - the macro generates these implementations for you.
+
+### ConfigMigrator: Partial Updates Made Easy
+
+For complex configuration files with multiple versioned entities, `ConfigMigrator` provides an ORM-like interface for querying and updating specific parts of the JSON without dealing with migration logic.
+
+```rust
+use version_migrate::{ConfigMigrator, Queryable, Migrator};
+
+// Define your domain entity
+#[derive(Serialize, Deserialize)]
+struct TaskEntity {
+    id: String,
+    title: String,
+    description: Option<String>,
+}
+
+// Mark it as queryable
+impl Queryable for TaskEntity {
+    const ENTITY_NAME: &'static str = "task";
+}
+
+// Setup migrator with migration paths (as usual)
+let mut migrator = Migrator::new();
+migrator.register(task_path)?;
+
+// config.json:
+// {
+//   "app_name": "MyApp",
+//   "version": "1.0.0",
+//   "tasks": [
+//     {"version": "1.0.0", "id": "1", "title": "Old Task"},
+//     {"version": "2.0.0", "id": "2", "title": "New Task", "description": "Desc"}
+//   ]
+// }
+
+let config_json = fs::read_to_string("config.json")?;
+let mut config = ConfigMigrator::from(&config_json, migrator)?;
+
+// Query tasks (automatically migrates all versions to TaskEntity)
+let mut tasks: Vec<TaskEntity> = config.query("tasks")?;
+
+// Work with domain entities (no version concerns!)
+tasks[0].title = "Updated Task".to_string();
+tasks.push(TaskEntity {
+    id: "3".into(),
+    title: "New Task".into(),
+    description: None,
+});
+
+// Update config with latest version
+config.update("tasks", tasks)?;
+
+// Save to file
+fs::write("config.json", config.to_string()?)?;
+// All tasks are now version 2.0.0!
+```
+
+**Benefits:**
+- **No version awareness needed**: Work with domain entities, not versioned DTOs
+- **Partial updates**: Only update specific keys in complex JSON structures
+- **Preserves other fields**: Non-updated parts of the config remain unchanged
+- **Automatic migration**: Old versions are transparently upgraded when queried
+- **Type-safe**: `Queryable` trait ensures correct entity names at compile time
+
+**Perfect for:**
+- Application configuration files with nested versioned data
+- Session/state management with evolving schemas
+- Multi-tenant systems where different tenants may have different data versions
 
 ### Flat Format Support
 

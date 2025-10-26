@@ -1143,6 +1143,152 @@ pub struct MigrationPath<D> {
     _phantom: PhantomData<D>,
 }
 
+/// A wrapper around JSON data that provides convenient query and update methods
+/// for partial updates with automatic migration.
+///
+/// `ConfigMigrator` holds a JSON object and allows you to query specific keys,
+/// automatically migrating versioned data to domain entities, and update them
+/// with the latest version.
+///
+/// # Example
+///
+/// ```ignore
+/// // config.json:
+/// // {
+/// //   "app_name": "MyApp",
+/// //   "tasks": [
+/// //     {"version": "1.0.0", "id": "1", "title": "Task 1"},
+/// //     {"version": "2.0.0", "id": "2", "title": "Task 2", "description": "New"}
+/// //   ]
+/// // }
+///
+/// let config_json = fs::read_to_string("config.json")?;
+/// let mut config = ConfigMigrator::from(&config_json, migrator)?;
+///
+/// // Query tasks (automatically migrates all versions to TaskEntity)
+/// let mut tasks: Vec<TaskEntity> = config.query("tasks")?;
+///
+/// // Update tasks
+/// tasks[0].title = "Updated Task".to_string();
+///
+/// // Save back with latest version
+/// config.update("tasks", tasks)?;
+///
+/// // Write to file
+/// fs::write("config.json", config.to_string()?)?;
+/// ```
+pub struct ConfigMigrator {
+    root: serde_json::Value,
+    migrator: Migrator,
+}
+
+impl ConfigMigrator {
+    /// Creates a new `ConfigMigrator` from a JSON string and a `Migrator`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MigrationError::DeserializationError` if the JSON is invalid.
+    pub fn from(json: &str, migrator: Migrator) -> Result<Self, MigrationError> {
+        let root = serde_json::from_str(json)
+            .map_err(|e| MigrationError::DeserializationError(e.to_string()))?;
+        Ok(Self { root, migrator })
+    }
+
+    /// Queries a specific key from the JSON object and returns the data as domain entities.
+    ///
+    /// This method automatically migrates all versioned data to the latest version
+    /// and converts them to domain entities.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `T`: Must implement `Queryable` to provide the entity name, and `Deserialize` for deserialization.
+    ///
+    /// # Errors
+    ///
+    /// - Returns `MigrationError::DeserializationError` if the key doesn't contain a valid array.
+    /// - Returns migration errors if the data cannot be migrated.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let tasks: Vec<TaskEntity> = config.query("tasks")?;
+    /// ```
+    pub fn query<T>(&self, key: &str) -> Result<Vec<T>, MigrationError>
+    where
+        T: crate::Queryable + for<'de> serde::Deserialize<'de>,
+    {
+        let value = &self.root[key];
+        if value.is_null() {
+            return Ok(Vec::new());
+        }
+
+        if !value.is_array() {
+            return Err(MigrationError::DeserializationError(format!(
+                "Key '{}' does not contain an array",
+                key
+            )));
+        }
+
+        let array = value.as_array().unwrap(); // Safe because we checked is_array()
+        self.migrator
+            .load_vec_flat_from(T::ENTITY_NAME, array.to_vec())
+    }
+
+    /// Updates a specific key in the JSON object with new domain entities.
+    ///
+    /// This method serializes the entities with the latest version and updates
+    /// the JSON object in place.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `T`: Must implement `Queryable`, `Versioned`, and `Serialize`.
+    ///
+    /// # Errors
+    ///
+    /// - Returns serialization errors if the data cannot be serialized.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// config.update("tasks", updated_tasks)?;
+    /// ```
+    pub fn update<T>(&mut self, key: &str, data: Vec<T>) -> Result<(), MigrationError>
+    where
+        T: crate::Queryable + crate::Versioned + serde::Serialize,
+    {
+        let json = self.migrator.save_vec_flat(data)?;
+        let value: serde_json::Value = serde_json::from_str(&json)
+            .map_err(|e| MigrationError::SerializationError(e.to_string()))?;
+        self.root[key] = value;
+        Ok(())
+    }
+
+    /// Converts the entire JSON object back to a pretty-printed string.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MigrationError::SerializationError` if serialization fails.
+    pub fn to_string(&self) -> Result<String, MigrationError> {
+        serde_json::to_string_pretty(&self.root)
+            .map_err(|e| MigrationError::SerializationError(e.to_string()))
+    }
+
+    /// Converts the entire JSON object to a compact string.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MigrationError::SerializationError` if serialization fails.
+    pub fn to_string_compact(&self) -> Result<String, MigrationError> {
+        serde_json::to_string(&self.root)
+            .map_err(|e| MigrationError::SerializationError(e.to_string()))
+    }
+
+    /// Returns a reference to the underlying JSON value.
+    pub fn as_value(&self) -> &serde_json::Value {
+        &self.root
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
