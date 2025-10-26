@@ -297,6 +297,147 @@ impl Migrator {
         self.load_from(entity, data)
     }
 
+    /// Loads and migrates data from a flat format JSON string.
+    ///
+    /// This is a convenience method for loading from flat format JSON where the version
+    /// field is at the same level as the data fields.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The entity name used when registering the migration path
+    /// * `json` - A JSON string containing versioned data in flat format
+    ///
+    /// # Returns
+    ///
+    /// The migrated data as the domain model type
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The JSON cannot be parsed
+    /// - The entity is not registered
+    /// - A migration step fails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let json = r#"{"version":"1.0.0","id":"task-1","title":"My Task"}"#;
+    /// let domain: TaskEntity = migrator.load_flat("task", json)?;
+    /// ```
+    pub fn load_flat<D: DeserializeOwned>(
+        &self,
+        entity: &str,
+        json: &str,
+    ) -> Result<D, MigrationError> {
+        let data: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+            MigrationError::DeserializationError(format!("Failed to parse JSON: {}", e))
+        })?;
+        self.load_flat_from(entity, data)
+    }
+
+    /// Loads and migrates data from any serde-compatible format in flat format.
+    ///
+    /// This method expects the version field to be at the same level as the data fields.
+    /// It uses the registered migration path's runtime-configured keys (respecting the
+    /// Path > Migrator > Trait priority).
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The entity name used when registering the migration path
+    /// * `value` - A serde-compatible value containing versioned data in flat format
+    ///
+    /// # Returns
+    ///
+    /// The migrated data as the domain model type
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The entity is not registered
+    /// - The data format is invalid
+    /// - A migration step fails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let toml_value: toml::Value = toml::from_str(toml_str)?;
+    /// let domain: TaskEntity = migrator.load_flat_from("task", toml_value)?;
+    /// ```
+    pub fn load_flat_from<D, T>(&self, entity: &str, value: T) -> Result<D, MigrationError>
+    where
+        D: DeserializeOwned,
+        T: Serialize,
+    {
+        let path = self
+            .paths
+            .get(entity)
+            .ok_or_else(|| MigrationError::EntityNotFound(entity.to_string()))?;
+
+        let version_key = &path.version_key;
+
+        // Convert to serde_json::Value for manipulation
+        let mut value = serde_json::to_value(value).map_err(|e| {
+            MigrationError::SerializationError(format!("Failed to convert input: {}", e))
+        })?;
+
+        // Extract version from the flat structure
+        let obj = value.as_object_mut().ok_or_else(|| {
+            MigrationError::DeserializationError(
+                "Expected object with version field at top level".to_string(),
+            )
+        })?;
+
+        let current_version = obj
+            .remove(version_key)
+            .ok_or_else(|| {
+                MigrationError::DeserializationError(format!(
+                    "Missing '{}' field in flat format",
+                    version_key
+                ))
+            })?
+            .as_str()
+            .ok_or_else(|| {
+                MigrationError::DeserializationError(format!(
+                    "Invalid '{}' field type",
+                    version_key
+                ))
+            })?
+            .to_string();
+
+        // Now obj contains only data fields (version has been removed)
+        let mut current_data = serde_json::Value::Object(obj.clone());
+        let mut current_version = current_version;
+
+        // Apply migration steps until we reach a version with no further steps
+        loop {
+            if let Some(migrate_fn) = path.steps.get(&current_version) {
+                // Migration function returns raw value, no wrapping
+                current_data = migrate_fn(current_data.clone())?;
+
+                // Update version to the next step
+                let current_idx = path.versions.iter().position(|v| v == &current_version);
+                if let Some(idx) = current_idx {
+                    if idx + 1 < path.versions.len() {
+                        current_version = path.versions[idx + 1].clone();
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Finalize into domain model
+        let domain_value = (path.finalize)(current_data)?;
+
+        serde_json::from_value(domain_value).map_err(|e| {
+            MigrationError::DeserializationError(format!("Failed to convert to domain: {}", e))
+        })
+    }
+
     /// Saves versioned data to a JSON string.
     ///
     /// This method wraps the provided data with its version information and serializes
@@ -347,6 +488,61 @@ impl Migrator {
 
         serde_json::to_string(&map).map_err(|e| {
             MigrationError::SerializationError(format!("Failed to serialize wrapper: {}", e))
+        })
+    }
+
+    /// Saves versioned data to a JSON string in flat format.
+    ///
+    /// Unlike `save()`, this method produces a flat JSON structure where the version
+    /// field is at the same level as the data fields, not wrapped in a separate object.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The versioned data to save
+    ///
+    /// # Returns
+    ///
+    /// A JSON string with the format: `{"version":"x.y.z","field1":"value1",...}`
+    ///
+    /// # Errors
+    ///
+    /// Returns `SerializationError` if the data cannot be serialized to JSON.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let task = TaskV1_0_0 {
+    ///     id: "task-1".to_string(),
+    ///     title: "My Task".to_string(),
+    /// };
+    ///
+    /// let migrator = Migrator::new();
+    /// let json = migrator.save_flat(task)?;
+    /// // json: {"version":"1.0.0","id":"task-1","title":"My Task"}
+    /// ```
+    pub fn save_flat<T: Versioned + Serialize>(&self, data: T) -> Result<String, MigrationError> {
+        let version_key = T::VERSION_KEY;
+
+        // Serialize the data to a JSON object
+        let mut data_value = serde_json::to_value(&data).map_err(|e| {
+            MigrationError::SerializationError(format!("Failed to serialize data: {}", e))
+        })?;
+
+        // Ensure it's an object so we can add the version field
+        let obj = data_value.as_object_mut().ok_or_else(|| {
+            MigrationError::SerializationError(
+                "Data must serialize to a JSON object for flat format".to_string(),
+            )
+        })?;
+
+        // Add the version field to the same level as data fields
+        obj.insert(
+            version_key.to_string(),
+            serde_json::Value::String(T::VERSION.to_string()),
+        );
+
+        serde_json::to_string(&obj).map_err(|e| {
+            MigrationError::SerializationError(format!("Failed to serialize flat format: {}", e))
         })
     }
 
@@ -433,6 +629,85 @@ impl Migrator {
         self.load_vec_from(entity, data)
     }
 
+    /// Loads and migrates multiple entities from a flat format JSON array string.
+    ///
+    /// This is a convenience method for loading from a JSON array where each element
+    /// has the version field at the same level as the data fields.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The entity name used when registering the migration path
+    /// * `json` - A JSON array string containing versioned data in flat format
+    ///
+    /// # Returns
+    ///
+    /// A vector of migrated data as domain model types
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The JSON cannot be parsed
+    /// - The entity is not registered
+    /// - Any migration step fails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let json = r#"[
+    ///     {"version":"1.0.0","id":"task-1","title":"Task 1"},
+    ///     {"version":"1.0.0","id":"task-2","title":"Task 2"}
+    /// ]"#;
+    /// let domains: Vec<TaskEntity> = migrator.load_vec_flat("task", json)?;
+    /// ```
+    pub fn load_vec_flat<D: DeserializeOwned>(
+        &self,
+        entity: &str,
+        json: &str,
+    ) -> Result<Vec<D>, MigrationError> {
+        let data: Vec<serde_json::Value> = serde_json::from_str(json).map_err(|e| {
+            MigrationError::DeserializationError(format!("Failed to parse JSON array: {}", e))
+        })?;
+        self.load_vec_flat_from(entity, data)
+    }
+
+    /// Loads and migrates multiple entities from any serde-compatible format in flat format.
+    ///
+    /// This method expects each element to have the version field at the same level
+    /// as the data fields. It uses the registered migration path's runtime-configured
+    /// keys (respecting the Path > Migrator > Trait priority).
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The entity name used when registering the migration path
+    /// * `data` - Vector of serde-compatible values in flat format
+    ///
+    /// # Returns
+    ///
+    /// A vector of migrated data as domain model types
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The entity is not registered
+    /// - The data format is invalid
+    /// - Any migration step fails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let toml_array: Vec<toml::Value> = /* ... */;
+    /// let domains: Vec<TaskEntity> = migrator.load_vec_flat_from("task", toml_array)?;
+    /// ```
+    pub fn load_vec_flat_from<D, T>(&self, entity: &str, data: Vec<T>) -> Result<Vec<D>, MigrationError>
+    where
+        D: DeserializeOwned,
+        T: Serialize,
+    {
+        data.into_iter()
+            .map(|item| self.load_flat_from(entity, item))
+            .collect()
+    }
+
     /// Saves multiple versioned entities to a JSON array string.
     ///
     /// This method wraps each item with its version information and serializes
@@ -496,6 +771,75 @@ impl Migrator {
 
         serde_json::to_string(&wrappers?).map_err(|e| {
             MigrationError::SerializationError(format!("Failed to serialize data array: {}", e))
+        })
+    }
+
+    /// Saves multiple versioned entities to a JSON array string in flat format.
+    ///
+    /// This method serializes each item with the version field at the same level
+    /// as the data fields, not wrapped in a separate object.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Vector of versioned data to save
+    ///
+    /// # Returns
+    ///
+    /// A JSON array string where each element has the format: `{"version":"x.y.z","field1":"value1",...}`
+    ///
+    /// # Errors
+    ///
+    /// Returns `SerializationError` if the data cannot be serialized to JSON.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let tasks = vec![
+    ///     TaskV1_0_0 {
+    ///         id: "task-1".to_string(),
+    ///         title: "Task 1".to_string(),
+    ///     },
+    ///     TaskV1_0_0 {
+    ///         id: "task-2".to_string(),
+    ///         title: "Task 2".to_string(),
+    ///     },
+    /// ];
+    ///
+    /// let migrator = Migrator::new();
+    /// let json = migrator.save_vec_flat(tasks)?;
+    /// // json: [{"version":"1.0.0","id":"task-1",...}, ...]
+    /// ```
+    pub fn save_vec_flat<T: Versioned + Serialize>(
+        &self,
+        data: Vec<T>,
+    ) -> Result<String, MigrationError> {
+        let version_key = T::VERSION_KEY;
+
+        let flat_items: Result<Vec<serde_json::Value>, MigrationError> = data
+            .into_iter()
+            .map(|item| {
+                let mut data_value = serde_json::to_value(&item).map_err(|e| {
+                    MigrationError::SerializationError(format!("Failed to serialize item: {}", e))
+                })?;
+
+                let obj = data_value.as_object_mut().ok_or_else(|| {
+                    MigrationError::SerializationError(
+                        "Data must serialize to a JSON object for flat format".to_string(),
+                    )
+                })?;
+
+                // Add version field at the same level
+                obj.insert(
+                    version_key.to_string(),
+                    serde_json::Value::String(T::VERSION.to_string()),
+                );
+
+                Ok(serde_json::Value::Object(obj.clone()))
+            })
+            .collect();
+
+        serde_json::to_string(&flat_items?).map_err(|e| {
+            MigrationError::SerializationError(format!("Failed to serialize flat data array: {}", e))
         })
     }
 }

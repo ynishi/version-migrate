@@ -20,6 +20,7 @@ Applications that persist data locally (e.g., session data, configuration) requi
 - **Separation of Concerns**: The core domain model remains completely unaware of persistence layer versioning details
 - **Developer Experience**: `serde`-like derive macro (`#[derive(Versioned)]`) to minimize boilerplate
 - **Format Flexibility**: Load from any serde-compatible format (JSON, TOML, YAML, etc.)
+- **Flat Format Support**: Both wrapped (`{"version":"..","data":{..}}`) and flat (`{"version":"..","field":..}`) formats
 - **Vec Support**: Migrate collections of versioned entities with `save_vec` and `load_vec`
 - **Hierarchical Structures**: Support for nested versioned entities with root-level versioning
 - **Custom Serialization Keys**: Customize field names (`version_key`, `data_key`) with three-tier priority (Path > Migrator > Type)
@@ -127,6 +128,58 @@ let json = migrator.save(task)?;
 
 // Load and automatically migrate to latest version
 let task: TaskEntity = migrator.load("task", &json)?;
+```
+
+### Flat Format Support
+
+In addition to the wrapped format, `version-migrate` supports flat format where the version field is at the same level as data fields. This is more common in general schema versioning scenarios.
+
+```rust
+// Save in flat format
+let task = TaskV1_0_0 { id: "1".into(), title: "My Task".into() };
+let json = migrator.save_flat(task)?;
+// → {"version":"1.0.0","id":"1","title":"My Task"}
+
+// Load from flat format
+let task: TaskEntity = migrator.load_flat("task", &json)?;
+```
+
+**Format Comparison:**
+
+```rust
+// Wrapped format (for DB/storage systems)
+save(data)  → {"version":"1.0.0","data":{"id":"1","title":"Task"}}
+load()      → Extracts from "data" field
+
+// Flat format (for general schema versioning)
+save_flat(data) → {"version":"1.0.0","id":"1","title":"Task"}
+load_flat()     → Version field at same level as data
+```
+
+**Vec Support:**
+
+```rust
+// Save and load collections in flat format
+let tasks = vec![task1, task2, task3];
+let json = migrator.save_vec_flat(tasks)?;
+// → [{"version":"1.0.0","id":"1",...}, {"version":"1.0.0","id":"2",...}]
+
+let tasks: Vec<TaskEntity> = migrator.load_vec_flat("task", &json)?;
+```
+
+**Runtime Override:**
+
+Flat format also supports the same three-tier priority system for customizing version keys:
+
+```rust
+// Custom version key in flat format
+let path = Migrator::define("task")
+    .with_keys("schema_version", "ignored") // data_key not used in flat format
+    .from::<TaskV1>()
+    .into::<TaskDomain>();
+
+let json = r#"{"schema_version":"1.0.0","id":"1","title":"Task"}"#;
+let task: TaskEntity = migrator.load_flat("task", json)?;
 ```
 
 ### Multiple Format Support
