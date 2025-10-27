@@ -924,16 +924,13 @@ mod async_impl {
             let base_path = paths.data_dir()?.join(domain_name);
 
             // Create directory if it doesn't exist (async)
-            if !tokio::fs::try_exists(&base_path)
-                .await
-                .unwrap_or(false)
-            {
-                tokio::fs::create_dir_all(&base_path)
-                    .await
-                    .map_err(|e| MigrationError::IoError {
+            if !tokio::fs::try_exists(&base_path).await.unwrap_or(false) {
+                tokio::fs::create_dir_all(&base_path).await.map_err(|e| {
+                    MigrationError::IoError {
                         path: base_path.display().to_string(),
                         error: e.to_string(),
-                    })?;
+                    }
+                })?;
             }
 
             Ok(Self {
@@ -1021,10 +1018,7 @@ mod async_impl {
             let file_path = self.id_to_path(id)?;
 
             // Check if file exists (async)
-            if !tokio::fs::try_exists(&file_path)
-                .await
-                .unwrap_or(false)
-            {
+            if !tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
                 return Err(MigrationError::IoError {
                     path: file_path.display().to_string(),
                     error: "File not found".to_string(),
@@ -1032,12 +1026,12 @@ mod async_impl {
             }
 
             // Read file content (async)
-            let content = tokio::fs::read_to_string(&file_path)
-                .await
-                .map_err(|e| MigrationError::IoError {
+            let content = tokio::fs::read_to_string(&file_path).await.map_err(|e| {
+                MigrationError::IoError {
                     path: file_path.display().to_string(),
                     error: e.to_string(),
-                })?;
+                }
+            })?;
 
             // Deserialize content to JSON value
             let value = self.deserialize_content(&content)?;
@@ -1059,33 +1053,35 @@ mod async_impl {
         /// - Filename decoding fails
         pub async fn list_ids(&self) -> Result<Vec<String>, MigrationError> {
             // Read directory (async)
-            let mut entries = tokio::fs::read_dir(&self.base_path)
-                .await
-                .map_err(|e| MigrationError::IoError {
+            let mut entries = tokio::fs::read_dir(&self.base_path).await.map_err(|e| {
+                MigrationError::IoError {
                     path: self.base_path.display().to_string(),
                     error: e.to_string(),
-                })?;
+                }
+            })?;
 
             let extension = self.strategy.get_extension();
             let mut ids = Vec::new();
 
-            while let Some(entry) = entries
-                .next_entry()
-                .await
-                .map_err(|e| MigrationError::IoError {
-                    path: self.base_path.display().to_string(),
-                    error: e.to_string(),
-                })?
+            while let Some(entry) =
+                entries
+                    .next_entry()
+                    .await
+                    .map_err(|e| MigrationError::IoError {
+                        path: self.base_path.display().to_string(),
+                        error: e.to_string(),
+                    })?
             {
                 let path = entry.path();
 
                 // Check if it's a file with the correct extension
-                let metadata = tokio::fs::metadata(&path)
-                    .await
-                    .map_err(|e| MigrationError::IoError {
-                        path: path.display().to_string(),
-                        error: e.to_string(),
-                    })?;
+                let metadata =
+                    tokio::fs::metadata(&path)
+                        .await
+                        .map_err(|e| MigrationError::IoError {
+                            path: path.display().to_string(),
+                            error: e.to_string(),
+                        })?;
 
                 if metadata.is_file() {
                     if let Some(ext) = path.extension() {
@@ -1148,19 +1144,17 @@ mod async_impl {
         pub async fn exists(&self, id: &str) -> Result<bool, MigrationError> {
             let file_path = self.id_to_path(id)?;
 
-            if !tokio::fs::try_exists(&file_path)
-                .await
-                .unwrap_or(false)
-            {
+            if !tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
                 return Ok(false);
             }
 
-            let metadata = tokio::fs::metadata(&file_path)
-                .await
-                .map_err(|e| MigrationError::IoError {
-                    path: file_path.display().to_string(),
-                    error: e.to_string(),
-                })?;
+            let metadata =
+                tokio::fs::metadata(&file_path)
+                    .await
+                    .map_err(|e| MigrationError::IoError {
+                        path: file_path.display().to_string(),
+                        error: e.to_string(),
+                    })?;
 
             Ok(metadata.is_file())
         }
@@ -1181,10 +1175,7 @@ mod async_impl {
         pub async fn delete(&self, id: &str) -> Result<(), MigrationError> {
             let file_path = self.id_to_path(id)?;
 
-            if tokio::fs::try_exists(&file_path)
-                .await
-                .unwrap_or(false)
-            {
+            if tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
                 tokio::fs::remove_file(&file_path)
                     .await
                     .map_err(|e| MigrationError::IoError {
@@ -1256,16 +1247,13 @@ mod async_impl {
         async fn atomic_write(&self, path: &Path, content: &str) -> Result<(), MigrationError> {
             // Ensure parent directory exists
             if let Some(parent) = path.parent() {
-                if !tokio::fs::try_exists(parent)
-                    .await
-                    .unwrap_or(false)
-                {
-                    tokio::fs::create_dir_all(parent)
-                        .await
-                        .map_err(|e| MigrationError::IoError {
+                if !tokio::fs::try_exists(parent).await.unwrap_or(false) {
+                    tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                        MigrationError::IoError {
                             path: parent.display().to_string(),
                             error: e.to_string(),
-                        })?;
+                        }
+                    })?;
                 }
             }
 
@@ -1273,12 +1261,13 @@ mod async_impl {
             let tmp_path = self.get_temp_path(path)?;
 
             // Write to temporary file (async)
-            let mut tmp_file = tokio::fs::File::create(&tmp_path)
-                .await
-                .map_err(|e| MigrationError::IoError {
-                    path: tmp_path.display().to_string(),
-                    error: e.to_string(),
-                })?;
+            let mut tmp_file =
+                tokio::fs::File::create(&tmp_path)
+                    .await
+                    .map_err(|e| MigrationError::IoError {
+                        path: tmp_path.display().to_string(),
+                        error: e.to_string(),
+                    })?;
 
             tmp_file
                 .write_all(content.as_bytes())
@@ -1316,9 +1305,9 @@ mod async_impl {
                 MigrationError::PathResolution("Path has no parent directory".to_string())
             })?;
 
-            let file_name = target_path
-                .file_name()
-                .ok_or_else(|| MigrationError::PathResolution("Path has no file name".to_string()))?;
+            let file_name = target_path.file_name().ok_or_else(|| {
+                MigrationError::PathResolution("Path has no file name".to_string())
+            })?;
 
             let tmp_name = format!(
                 ".{}.tmp.{}",
@@ -1668,8 +1657,7 @@ mod async_impl {
             }
 
             // Load all
-            let results: Vec<(String, SessionEntity)> =
-                storage.load_all("session").await.unwrap();
+            let results: Vec<(String, SessionEntity)> = storage.load_all("session").await.unwrap();
             assert_eq!(results.len(), 3);
 
             // Verify all sessions are loaded
