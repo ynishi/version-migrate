@@ -7,7 +7,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
-type MigrationFn = Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError>>;
+type MigrationFn =
+    Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError> + Send + Sync>;
 
 /// Type-erased function for saving domain entities
 type DomainSaveFn =
