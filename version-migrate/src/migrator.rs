@@ -20,7 +20,8 @@ struct EntityMigrationPath {
     /// Maps version -> migration function to next version
     steps: HashMap<String, MigrationFn>,
     /// The final conversion to domain model
-    finalize: Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError>>,
+    finalize:
+        Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError> + Send + Sync>,
     /// Ordered list of versions in the migration path
     versions: Vec<String>,
     /// The key name for version field in serialized data
@@ -1320,23 +1321,24 @@ where
     where
         V: IntoDomain<D>,
     {
-        let finalize: Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError>> =
-            Box::new(move |value| {
-                let versioned: V = serde_json::from_value(value).map_err(|e| {
-                    MigrationError::DeserializationError(format!(
-                        "Failed to deserialize final version: {}",
-                        e
-                    ))
-                })?;
+        let finalize: Box<
+            dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError> + Send + Sync,
+        > = Box::new(move |value| {
+            let versioned: V = serde_json::from_value(value).map_err(|e| {
+                MigrationError::DeserializationError(format!(
+                    "Failed to deserialize final version: {}",
+                    e
+                ))
+            })?;
 
-                let domain = versioned.into_domain();
+            let domain = versioned.into_domain();
 
-                serde_json::to_value(domain).map_err(|e| MigrationError::MigrationStepFailed {
-                    from: V::VERSION.to_string(),
-                    to: "domain".to_string(),
-                    error: e.to_string(),
-                })
-            });
+            serde_json::to_value(domain).map_err(|e| MigrationError::MigrationStepFailed {
+                from: V::VERSION.to_string(),
+                to: "domain".to_string(),
+                error: e.to_string(),
+            })
+        });
 
         MigrationPath {
             entity: self.entity,
@@ -1394,23 +1396,24 @@ where
     where
         V: IntoDomain<D> + crate::FromDomain<D>,
     {
-        let finalize: Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError>> =
-            Box::new(move |value| {
-                let versioned: V = serde_json::from_value(value).map_err(|e| {
-                    MigrationError::DeserializationError(format!(
-                        "Failed to deserialize final version: {}",
-                        e
-                    ))
-                })?;
+        let finalize: Box<
+            dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError> + Send + Sync,
+        > = Box::new(move |value| {
+            let versioned: V = serde_json::from_value(value).map_err(|e| {
+                MigrationError::DeserializationError(format!(
+                    "Failed to deserialize final version: {}",
+                    e
+                ))
+            })?;
 
-                let domain = versioned.into_domain();
+            let domain = versioned.into_domain();
 
-                serde_json::to_value(domain).map_err(|e| MigrationError::MigrationStepFailed {
-                    from: V::VERSION.to_string(),
-                    to: "domain".to_string(),
-                    error: e.to_string(),
-                })
-            });
+            serde_json::to_value(domain).map_err(|e| MigrationError::MigrationStepFailed {
+                from: V::VERSION.to_string(),
+                to: "domain".to_string(),
+                error: e.to_string(),
+            })
+        });
 
         // Create save function for domain entities
         let version = V::VERSION;
@@ -1535,23 +1538,24 @@ where
     where
         V: IntoDomain<D>,
     {
-        let finalize: Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError>> =
-            Box::new(move |value| {
-                let versioned: V = serde_json::from_value(value).map_err(|e| {
-                    MigrationError::DeserializationError(format!(
-                        "Failed to deserialize final version: {}",
-                        e
-                    ))
-                })?;
+        let finalize: Box<
+            dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError> + Send + Sync,
+        > = Box::new(move |value| {
+            let versioned: V = serde_json::from_value(value).map_err(|e| {
+                MigrationError::DeserializationError(format!(
+                    "Failed to deserialize final version: {}",
+                    e
+                ))
+            })?;
 
-                let domain = versioned.into_domain();
+            let domain = versioned.into_domain();
 
-                serde_json::to_value(domain).map_err(|e| MigrationError::MigrationStepFailed {
-                    from: V::VERSION.to_string(),
-                    to: "domain".to_string(),
-                    error: e.to_string(),
-                })
-            });
+            serde_json::to_value(domain).map_err(|e| MigrationError::MigrationStepFailed {
+                from: V::VERSION.to_string(),
+                to: "domain".to_string(),
+                error: e.to_string(),
+            })
+        });
 
         MigrationPath {
             entity: self.entity,
@@ -1578,23 +1582,24 @@ where
     where
         V: IntoDomain<D> + crate::FromDomain<D>,
     {
-        let finalize: Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError>> =
-            Box::new(move |value| {
-                let versioned: V = serde_json::from_value(value).map_err(|e| {
-                    MigrationError::DeserializationError(format!(
-                        "Failed to deserialize final version: {}",
-                        e
-                    ))
-                })?;
+        let finalize: Box<
+            dyn Fn(serde_json::Value) -> Result<serde_json::Value, MigrationError> + Send + Sync,
+        > = Box::new(move |value| {
+            let versioned: V = serde_json::from_value(value).map_err(|e| {
+                MigrationError::DeserializationError(format!(
+                    "Failed to deserialize final version: {}",
+                    e
+                ))
+            })?;
 
-                let domain = versioned.into_domain();
+            let domain = versioned.into_domain();
 
-                serde_json::to_value(domain).map_err(|e| MigrationError::MigrationStepFailed {
-                    from: V::VERSION.to_string(),
-                    to: "domain".to_string(),
-                    error: e.to_string(),
-                })
-            });
+            serde_json::to_value(domain).map_err(|e| MigrationError::MigrationStepFailed {
+                from: V::VERSION.to_string(),
+                to: "domain".to_string(),
+                error: e.to_string(),
+            })
+        });
 
         // Create save function for domain entities
         let version = V::VERSION;
