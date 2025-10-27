@@ -832,7 +832,10 @@ impl DirStorage {
                     .and_then(|bytes| {
                         String::from_utf8(bytes).map_err(|e| MigrationError::FilenameEncoding {
                             id: filename_stem.to_string(),
-                            reason: format!("Failed to convert Base64-decoded bytes to UTF-8: {}", e),
+                            reason: format!(
+                                "Failed to convert Base64-decoded bytes to UTF-8: {}",
+                                e
+                            ),
                         })
                     })
             }
@@ -1545,8 +1548,8 @@ mod tests {
         ));
 
         let migrator = setup_session_migrator();
-        let strategy = DirStorageStrategy::default()
-            .with_filename_encoding(FilenameEncoding::UrlEncode);
+        let strategy =
+            DirStorageStrategy::default().with_filename_encoding(FilenameEncoding::UrlEncode);
         let storage = DirStorage::new(paths, "sessions", migrator, strategy).unwrap();
 
         // Use an ID with special characters that need URL encoding
@@ -1558,7 +1561,9 @@ mod tests {
         };
 
         // Save the entity
-        storage.save("session", complex_id, session.clone()).unwrap();
+        storage
+            .save("session", complex_id, session.clone())
+            .unwrap();
 
         // Verify the file was created with encoded filename
         let encoded_id = urlencoding::encode(complex_id);
@@ -1585,8 +1590,8 @@ mod tests {
         ));
 
         let migrator = setup_session_migrator();
-        let strategy = DirStorageStrategy::default()
-            .with_filename_encoding(FilenameEncoding::Base64);
+        let strategy =
+            DirStorageStrategy::default().with_filename_encoding(FilenameEncoding::Base64);
         let storage = DirStorage::new(paths, "sessions", migrator, strategy).unwrap();
 
         // Use a complex ID with various special characters
@@ -1598,7 +1603,9 @@ mod tests {
         };
 
         // Save the entity
-        storage.save("session", complex_id, session.clone()).unwrap();
+        storage
+            .save("session", complex_id, session.clone())
+            .unwrap();
 
         // Verify the file was created with Base64-encoded filename
         let encoded_id = URL_SAFE_NO_PAD.encode(complex_id.as_bytes());
@@ -1628,12 +1635,13 @@ mod tests {
         // The urlencoding crate handles most cases gracefully, but we can test
         // that it properly decodes even with partial sequences (which it does)
         let migrator_url = setup_session_migrator();
-        let strategy_url = DirStorageStrategy::default()
-            .with_filename_encoding(FilenameEncoding::UrlEncode);
-        let storage_url = DirStorage::new(paths.clone(), "sessions_url", migrator_url, strategy_url).unwrap();
+        let strategy_url =
+            DirStorageStrategy::default().with_filename_encoding(FilenameEncoding::UrlEncode);
+        let storage_url =
+            DirStorage::new(paths.clone(), "sessions_url", migrator_url, strategy_url).unwrap();
 
         // Invalid UTF-8 percent encoding - this should fail
-        let invalid_url_encoded = "%C0%C1";  // Invalid UTF-8 sequence
+        let invalid_url_encoded = "%C0%C1"; // Invalid UTF-8 sequence
         let result = storage_url.decode_id(invalid_url_encoded);
         assert!(result.is_err());
         if let Err(MigrationError::FilenameEncoding { id, reason }) = result {
@@ -1643,9 +1651,10 @@ mod tests {
 
         // Test Base64 decoding with invalid input
         let migrator_base64 = setup_session_migrator();
-        let strategy_base64 = DirStorageStrategy::default()
-            .with_filename_encoding(FilenameEncoding::Base64);
-        let storage_base64 = DirStorage::new(paths, "sessions_base64", migrator_base64, strategy_base64).unwrap();
+        let strategy_base64 =
+            DirStorageStrategy::default().with_filename_encoding(FilenameEncoding::Base64);
+        let storage_base64 =
+            DirStorage::new(paths, "sessions_base64", migrator_base64, strategy_base64).unwrap();
 
         // Invalid Base64 string (contains invalid characters)
         let invalid_base64 = "!!!invalid@@@";
