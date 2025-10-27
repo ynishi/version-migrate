@@ -28,7 +28,8 @@ Applications that persist data locally (e.g., session data, configuration) requi
 - **Hierarchical Structures**: Support for nested versioned entities with root-level versioning
 - **Custom Serialization Keys**: Customize field names (`version_key`, `data_key`) with three-tier priority (Path > Migrator > Type)
 - **Async Support**: Async traits for migrations requiring I/O operations (database, API calls)
-- **File Storage with ACID**: Atomic file operations with retry logic, format conversion (TOML/JSON), and automatic cleanup
+- **File Storage with ACID**: Atomic file operations with retry logic, format conversion (TOML/JSON), and automatic cleanup.
+- **Directory Storage with ACID**: A new storage engine (`DirStorage`) for managing entities as individual files, ideal for session or task management. Also provides a fully non-blocking `AsyncDirStorage` under an `async` feature flag.
 - **Platform-Agnostic Paths**: Unified path management across Linux, macOS, Windows with customizable strategies (System/Xdg/CustomBase)
 
 ## Installation
@@ -37,7 +38,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-version-migrate = "0.1.0"
+version-migrate = "0.9.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ```
@@ -45,7 +46,7 @@ serde_json = "1.0"
 ## Quick Start
 
 ```rust
-use version_migrate::{Versioned, MigratesTo, IntoDomain, Migrator};
+use version-migrate::{Versioned, MigratesTo, IntoDomain, Migrator};
 use serde::{Serialize, Deserialize};
 
 // Version 1.0.0
@@ -144,7 +145,7 @@ There are two ways to save domain entities directly using their latest version:
 This approach associates the entity type with its latest version at compile time:
 
 ```rust
-use version_migrate::{FromDomain, VersionMigrate};
+use version-migrate::{FromDomain, VersionMigrate};
 
 // Latest versioned type
 #[derive(Serialize, Deserialize, Versioned)]
@@ -276,7 +277,7 @@ let task: Task = serde_json::from_str(&json)?;
 For complex configuration files with multiple versioned entities, `ConfigMigrator` provides an ORM-like interface for querying and updating specific parts of the JSON without dealing with migration logic.
 
 ```rust
-use version_migrate::{ConfigMigrator, Migrator, DeriveQueryable as Queryable};
+use version-migrate::{ConfigMigrator, Migrator, DeriveQueryable as Queryable};
 
 // Define your domain entity (version-agnostic) with queryable macro
 #[derive(Serialize, Deserialize, Queryable)]
@@ -647,7 +648,7 @@ let path = Migrator::define("task")
 For migrations requiring I/O operations (database queries, API calls), use async traits:
 
 ```rust
-use version_migrate::{async_trait, AsyncMigratesTo, AsyncIntoDomain};
+use version-migrate::{async_trait, AsyncMigratesTo, AsyncIntoDomain};
 
 #[async_trait]
 impl AsyncMigratesTo<TaskV1_1_0> for TaskV1_0_0 {
@@ -715,7 +716,7 @@ match migrator.load("task", json) {
 `FileStorage` provides atomic file operations with ACID guarantees for persistent configuration:
 
 ```rust
-use version_migrate::{FileStorage, FileStorageStrategy, FormatStrategy, LoadBehavior};
+use version-migrate::{FileStorage, FileStorageStrategy, FormatStrategy, LoadBehavior};
 
 // Configure storage strategy
 let strategy = FileStorageStrategy::default()
@@ -742,12 +743,90 @@ storage.update_and_save("tasks", updated_tasks)?;
 - **Load Strategies**: Create empty config if missing, or return error
 - **Cleanup**: Automatic cleanup of temporary files (best effort)
 
+### DirStorage: Multi-File Entity Storage
+
+While `FileStorage` is ideal for single-file configurations, `DirStorage` is designed for managing a large number of entities where each entity is stored as a separate file. This is perfect for use cases like session data, user profiles, or task items.
+
+It provides the same ACID guarantees as `FileStorage` but operates on a directory of files. It also supports flexible filename encoding to safely handle complex entity IDs.
+
+#### Sync and Async Usage
+
+`DirStorage` is available in both synchronous and asynchronous versions. The async version, `AsyncDirStorage`, is enabled via the `async` feature flag and uses `tokio::fs` for non-blocking I/O, providing significant performance benefits for I/O-heavy applications.
+
+**`Cargo.toml` for async:**
+```toml
+[dependencies]
+version-migrate = { version = "0.9.0", features = ["async"] }
+tokio = { version = "1.0", features = ["full"] }
+```
+
+**Example:**
+
+```rust
+use version-migrate::{
+    AppPaths, PathStrategy, Migrator, DirStorage, DirStorageStrategy, FilenameEncoding
+};
+// For async, also import AsyncDirStorage
+use version-migrate::AsyncDirStorage;
+
+// 1. Setup paths and migrator (same for both sync and async)
+let paths = AppPaths::new("myapp");
+let migrator = setup_migrator(); // Assuming a migrator is configured
+
+// 2. Define a strategy
+let strategy = DirStorageStrategy::default()
+    .with_filename_encoding(FilenameEncoding::UrlEncode);
+
+// =================================================
+// 3a. Use the synchronous `DirStorage`
+// =================================================
+let storage = DirStorage::new(
+    paths.clone(),
+    "sessions",
+    migrator.clone(),
+    strategy.clone()
+)?;
+
+// Save, load, and list entities synchronously
+storage.save("session", "user@example.com", session_entity.clone())?;
+let loaded: SessionEntity = storage.load("session", "user@example.com")?;
+let ids = storage.list_ids()?;
+storage.delete("user@example.com")?;
+
+
+// =================================================
+// 3b. Use the asynchronous `AsyncDirStorage`
+// =================================================
+#[cfg(feature = "async")]
+async fn run_async_storage() -> Result<(), MigrationError> {
+    let paths = AppPaths::new("myapp");
+    let migrator = setup_migrator();
+    let strategy = DirStorageStrategy::default()
+        .with_filename_encoding(FilenameEncoding::UrlEncode);
+
+    let storage = AsyncDirStorage::new(
+        paths,
+        "sessions_async",
+        migrator,
+        strategy
+    ).await?;
+
+    // Save, load, and list entities asynchronously
+    storage.save("session", "user@example.com", session_entity.clone()).await?;
+    let loaded: SessionEntity = storage.load("session", "user@example.com").await?;
+    let ids = storage.list_ids().await?;
+    storage.delete("user@example.com").await?;
+
+    Ok(())
+}
+```
+
 ### Platform-Agnostic Path Management
 
 `AppPaths` provides unified path resolution across platforms:
 
 ```rust
-use version_migrate::{AppPaths, PathStrategy};
+use version-migrate::{AppPaths, PathStrategy};
 
 // Use OS-standard directories (default)
 let paths = AppPaths::new("myapp");
@@ -782,7 +861,7 @@ let cache_file = paths.data_file("cache.db")?;
 Combining `FileStorage` and `AppPaths` for production use:
 
 ```rust
-use version_migrate::{
+use version-migrate::{
     AppPaths, PathStrategy, FileStorage, FileStorageStrategy,
     Migrator, Queryable
 };
