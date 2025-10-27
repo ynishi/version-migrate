@@ -1,3 +1,5 @@
+#![cfg(feature = "async")]
+
 use serde::{Deserialize, Serialize};
 use version_migrate::{async_trait, AsyncIntoDomain, AsyncMigratesTo, MigrationError, Versioned};
 

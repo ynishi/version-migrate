@@ -865,6 +865,948 @@ fn toml_to_json(toml_value: toml::Value) -> Result<serde_json::Value, MigrationE
     Ok(json_value)
 }
 
+// ============================================================================
+// Async implementation
+// ============================================================================
+
+#[cfg(feature = "async")]
+pub use async_impl::AsyncDirStorage;
+
+#[cfg(feature = "async")]
+mod async_impl {
+    use crate::{AppPaths, MigrationError, Migrator};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use std::path::{Path, PathBuf};
+    use tokio::io::AsyncWriteExt;
+
+    use super::{json_to_toml, toml_to_json, DirStorageStrategy, FilenameEncoding, FormatStrategy};
+
+    /// Async version of DirStorage for directory-based entity storage.
+    ///
+    /// Provides the same functionality as `DirStorage` but with async operations
+    /// using `tokio::fs` for non-blocking I/O.
+    pub struct AsyncDirStorage {
+        /// Resolved base directory path
+        base_path: PathBuf,
+        /// Migrator instance for handling version migrations
+        migrator: Migrator,
+        /// Storage strategy configuration
+        strategy: DirStorageStrategy,
+    }
+
+    impl AsyncDirStorage {
+        /// Create a new AsyncDirStorage instance.
+        ///
+        /// # Arguments
+        ///
+        /// * `paths` - Application paths manager
+        /// * `domain_name` - Domain-specific subdirectory name (e.g., "sessions", "tasks")
+        /// * `migrator` - Migrator instance with registered migration paths
+        /// * `strategy` - Storage strategy configuration
+        ///
+        /// # Behavior
+        ///
+        /// - Resolves the base path using `paths.data_dir()?.join(domain_name)`
+        /// - Creates the directory if it doesn't exist (async)
+        /// - Does not load existing files (lazy loading)
+        ///
+        /// # Errors
+        ///
+        /// Returns `MigrationError::IoError` if directory creation fails.
+        pub async fn new(
+            paths: AppPaths,
+            domain_name: &str,
+            migrator: Migrator,
+            strategy: DirStorageStrategy,
+        ) -> Result<Self, MigrationError> {
+            // Resolve base path: data_dir/domain_name
+            let base_path = paths.data_dir()?.join(domain_name);
+
+            // Create directory if it doesn't exist (async)
+            if !tokio::fs::try_exists(&base_path)
+                .await
+                .unwrap_or(false)
+            {
+                tokio::fs::create_dir_all(&base_path)
+                    .await
+                    .map_err(|e| MigrationError::IoError {
+                        path: base_path.display().to_string(),
+                        error: e.to_string(),
+                    })?;
+            }
+
+            Ok(Self {
+                base_path,
+                migrator,
+                strategy,
+            })
+        }
+
+        /// Save an entity to a file (async).
+        ///
+        /// # Arguments
+        ///
+        /// * `entity_name` - The entity name registered in the migrator
+        /// * `id` - The unique identifier for this entity (used as filename)
+        /// * `entity` - The entity to save
+        ///
+        /// # Process
+        ///
+        /// 1. Converts the entity to its latest versioned DTO
+        /// 2. Serializes to the configured format (JSON/TOML)
+        /// 3. Writes atomically using temporary file + rename
+        ///
+        /// # Errors
+        ///
+        /// Returns error if:
+        /// - Entity name not registered in migrator
+        /// - ID contains invalid characters (for Direct encoding)
+        /// - Serialization fails
+        /// - File write fails
+        pub async fn save<T>(
+            &self,
+            entity_name: &str,
+            id: &str,
+            entity: T,
+        ) -> Result<(), MigrationError>
+        where
+            T: serde::Serialize,
+        {
+            // Convert entity to latest versioned DTO and get JSON string
+            let json_string = self.migrator.save_domain_flat(entity_name, entity)?;
+
+            // Parse back to JSON value for format conversion
+            let versioned_value: serde_json::Value = serde_json::from_str(&json_string)
+                .map_err(|e| MigrationError::DeserializationError(e.to_string()))?;
+
+            // Serialize to target format (JSON or TOML)
+            let content = self.serialize_content(&versioned_value)?;
+
+            // Get target file path
+            let file_path = self.id_to_path(id)?;
+
+            // Write atomically (async)
+            self.atomic_write(&file_path, &content).await?;
+
+            Ok(())
+        }
+
+        /// Load an entity from a file (async).
+        ///
+        /// # Arguments
+        ///
+        /// * `entity_name` - The entity name registered in the migrator
+        /// * `id` - The unique identifier for the entity
+        ///
+        /// # Process
+        ///
+        /// 1. Gets the file path using `id_to_path`
+        /// 2. Reads the file content to a string (async)
+        /// 3. Deserializes the content to a `serde_json::Value`
+        /// 4. Migrates the `Value` to the target domain type
+        ///
+        /// # Errors
+        ///
+        /// Returns error if:
+        /// - Entity name not registered in migrator
+        /// - File not found
+        /// - Deserialization fails
+        /// - Migration fails
+        pub async fn load<D>(&self, entity_name: &str, id: &str) -> Result<D, MigrationError>
+        where
+            D: serde::de::DeserializeOwned,
+        {
+            // Get file path
+            let file_path = self.id_to_path(id)?;
+
+            // Check if file exists (async)
+            if !tokio::fs::try_exists(&file_path)
+                .await
+                .unwrap_or(false)
+            {
+                return Err(MigrationError::IoError {
+                    path: file_path.display().to_string(),
+                    error: "File not found".to_string(),
+                });
+            }
+
+            // Read file content (async)
+            let content = tokio::fs::read_to_string(&file_path)
+                .await
+                .map_err(|e| MigrationError::IoError {
+                    path: file_path.display().to_string(),
+                    error: e.to_string(),
+                })?;
+
+            // Deserialize content to JSON value
+            let value = self.deserialize_content(&content)?;
+
+            // Migrate to domain type using load_flat_from
+            self.migrator.load_flat_from(entity_name, value)
+        }
+
+        /// List all entity IDs in the storage directory (async).
+        ///
+        /// # Returns
+        ///
+        /// A sorted vector of entity IDs (decoded from filenames).
+        ///
+        /// # Errors
+        ///
+        /// Returns error if:
+        /// - Directory read fails
+        /// - Filename decoding fails
+        pub async fn list_ids(&self) -> Result<Vec<String>, MigrationError> {
+            // Read directory (async)
+            let mut entries = tokio::fs::read_dir(&self.base_path)
+                .await
+                .map_err(|e| MigrationError::IoError {
+                    path: self.base_path.display().to_string(),
+                    error: e.to_string(),
+                })?;
+
+            let extension = self.strategy.get_extension();
+            let mut ids = Vec::new();
+
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .map_err(|e| MigrationError::IoError {
+                    path: self.base_path.display().to_string(),
+                    error: e.to_string(),
+                })?
+            {
+                let path = entry.path();
+
+                // Check if it's a file with the correct extension
+                let metadata = tokio::fs::metadata(&path)
+                    .await
+                    .map_err(|e| MigrationError::IoError {
+                        path: path.display().to_string(),
+                        error: e.to_string(),
+                    })?;
+
+                if metadata.is_file() {
+                    if let Some(ext) = path.extension() {
+                        if ext == extension.as_str() {
+                            // Extract ID from filename
+                            if let Some(id) = self.path_to_id(&path)? {
+                                ids.push(id);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Sort IDs for consistent ordering
+            ids.sort();
+            Ok(ids)
+        }
+
+        /// Load all entities from the storage directory (async).
+        ///
+        /// # Arguments
+        ///
+        /// * `entity_name` - The entity name registered in the migrator
+        ///
+        /// # Returns
+        ///
+        /// A vector of `(id, entity)` tuples.
+        ///
+        /// # Errors
+        ///
+        /// Returns error if any entity fails to load. This operation is atomic:
+        /// if any load fails, the whole operation fails.
+        pub async fn load_all<D>(
+            &self,
+            entity_name: &str,
+        ) -> Result<Vec<(String, D)>, MigrationError>
+        where
+            D: serde::de::DeserializeOwned,
+        {
+            let ids = self.list_ids().await?;
+            let mut results = Vec::new();
+
+            for id in ids {
+                let entity = self.load(entity_name, &id).await?;
+                results.push((id, entity));
+            }
+
+            Ok(results)
+        }
+
+        /// Check if an entity exists (async).
+        ///
+        /// # Arguments
+        ///
+        /// * `id` - The entity ID
+        ///
+        /// # Returns
+        ///
+        /// `true` if the file exists and is a file, `false` otherwise.
+        pub async fn exists(&self, id: &str) -> Result<bool, MigrationError> {
+            let file_path = self.id_to_path(id)?;
+
+            if !tokio::fs::try_exists(&file_path)
+                .await
+                .unwrap_or(false)
+            {
+                return Ok(false);
+            }
+
+            let metadata = tokio::fs::metadata(&file_path)
+                .await
+                .map_err(|e| MigrationError::IoError {
+                    path: file_path.display().to_string(),
+                    error: e.to_string(),
+                })?;
+
+            Ok(metadata.is_file())
+        }
+
+        /// Delete an entity file (async).
+        ///
+        /// # Arguments
+        ///
+        /// * `id` - The entity ID
+        ///
+        /// # Behavior
+        ///
+        /// This operation is idempotent: deleting a non-existent file is not an error.
+        ///
+        /// # Errors
+        ///
+        /// Returns error if file deletion fails (but not if file doesn't exist).
+        pub async fn delete(&self, id: &str) -> Result<(), MigrationError> {
+            let file_path = self.id_to_path(id)?;
+
+            if tokio::fs::try_exists(&file_path)
+                .await
+                .unwrap_or(false)
+            {
+                tokio::fs::remove_file(&file_path)
+                    .await
+                    .map_err(|e| MigrationError::IoError {
+                        path: file_path.display().to_string(),
+                        error: e.to_string(),
+                    })?;
+            }
+
+            Ok(())
+        }
+
+        // ====================================================================
+        // Private helper methods (same as sync version but async where needed)
+        // ====================================================================
+
+        /// Convert an entity ID to a file path.
+        fn id_to_path(&self, id: &str) -> Result<PathBuf, MigrationError> {
+            let encoded_id = self.encode_id(id)?;
+            let extension = self.strategy.get_extension();
+            let filename = format!("{}.{}", encoded_id, extension);
+            Ok(self.base_path.join(filename))
+        }
+
+        /// Encode an entity ID to a filesystem-safe filename.
+        fn encode_id(&self, id: &str) -> Result<String, MigrationError> {
+            match self.strategy.filename_encoding {
+                FilenameEncoding::Direct => {
+                    // Validate that ID contains only safe characters
+                    if id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    {
+                        Ok(id.to_string())
+                    } else {
+                        Err(MigrationError::FilenameEncoding {
+                            id: id.to_string(),
+                            reason: "ID contains invalid characters for Direct encoding. Only alphanumeric, '-', and '_' are allowed.".to_string(),
+                        })
+                    }
+                }
+                FilenameEncoding::UrlEncode => {
+                    // URL-encode the ID for filesystem safety
+                    Ok(urlencoding::encode(id).into_owned())
+                }
+                FilenameEncoding::Base64 => {
+                    // Base64-encode the ID using URL-safe encoding without padding
+                    Ok(URL_SAFE_NO_PAD.encode(id.as_bytes()))
+                }
+            }
+        }
+
+        /// Serialize a JSON value to string based on the configured format.
+        fn serialize_content(&self, value: &serde_json::Value) -> Result<String, MigrationError> {
+            match self.strategy.format {
+                FormatStrategy::Json => serde_json::to_string_pretty(value)
+                    .map_err(|e| MigrationError::SerializationError(e.to_string())),
+                FormatStrategy::Toml => {
+                    let toml_value = json_to_toml(value)?;
+                    toml::to_string_pretty(&toml_value)
+                        .map_err(|e| MigrationError::TomlSerializeError(e.to_string()))
+                }
+            }
+        }
+
+        /// Write content to a file atomically (async).
+        ///
+        /// Uses the "temporary file + fsync + atomic rename" pattern to ensure
+        /// durability and atomicity.
+        async fn atomic_write(&self, path: &Path, content: &str) -> Result<(), MigrationError> {
+            // Ensure parent directory exists
+            if let Some(parent) = path.parent() {
+                if !tokio::fs::try_exists(parent)
+                    .await
+                    .unwrap_or(false)
+                {
+                    tokio::fs::create_dir_all(parent)
+                        .await
+                        .map_err(|e| MigrationError::IoError {
+                            path: parent.display().to_string(),
+                            error: e.to_string(),
+                        })?;
+                }
+            }
+
+            // Create temporary file path
+            let tmp_path = self.get_temp_path(path)?;
+
+            // Write to temporary file (async)
+            let mut tmp_file = tokio::fs::File::create(&tmp_path)
+                .await
+                .map_err(|e| MigrationError::IoError {
+                    path: tmp_path.display().to_string(),
+                    error: e.to_string(),
+                })?;
+
+            tmp_file
+                .write_all(content.as_bytes())
+                .await
+                .map_err(|e| MigrationError::IoError {
+                    path: tmp_path.display().to_string(),
+                    error: e.to_string(),
+                })?;
+
+            // Ensure data is written to disk
+            tmp_file
+                .sync_all()
+                .await
+                .map_err(|e| MigrationError::IoError {
+                    path: tmp_path.display().to_string(),
+                    error: e.to_string(),
+                })?;
+
+            drop(tmp_file);
+
+            // Atomic rename with retry (async)
+            self.atomic_rename(&tmp_path, path).await?;
+
+            // Cleanup old temp files (best effort)
+            if self.strategy.atomic_write.cleanup_tmp_files {
+                let _ = self.cleanup_temp_files(path).await;
+            }
+
+            Ok(())
+        }
+
+        /// Get path to temporary file for atomic writes.
+        fn get_temp_path(&self, target_path: &Path) -> Result<PathBuf, MigrationError> {
+            let parent = target_path.parent().ok_or_else(|| {
+                MigrationError::PathResolution("Path has no parent directory".to_string())
+            })?;
+
+            let file_name = target_path
+                .file_name()
+                .ok_or_else(|| MigrationError::PathResolution("Path has no file name".to_string()))?;
+
+            let tmp_name = format!(
+                ".{}.tmp.{}",
+                file_name.to_string_lossy(),
+                std::process::id()
+            );
+            Ok(parent.join(tmp_name))
+        }
+
+        /// Atomically rename temporary file to target path with retry (async).
+        async fn atomic_rename(
+            &self,
+            tmp_path: &Path,
+            target_path: &Path,
+        ) -> Result<(), MigrationError> {
+            let mut last_error = None;
+
+            for attempt in 0..self.strategy.atomic_write.retry_count {
+                match tokio::fs::rename(tmp_path, target_path).await {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        last_error = Some(e);
+                        if attempt + 1 < self.strategy.atomic_write.retry_count {
+                            // Small delay before retry
+                            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                        }
+                    }
+                }
+            }
+
+            Err(MigrationError::IoError {
+                path: target_path.display().to_string(),
+                error: format!(
+                    "Failed to rename after {} attempts: {}",
+                    self.strategy.atomic_write.retry_count,
+                    last_error.unwrap()
+                ),
+            })
+        }
+
+        /// Clean up old temporary files (best effort, async).
+        async fn cleanup_temp_files(&self, target_path: &Path) -> std::io::Result<()> {
+            let parent = match target_path.parent() {
+                Some(p) => p,
+                None => return Ok(()),
+            };
+
+            let file_name = match target_path.file_name() {
+                Some(f) => f.to_string_lossy(),
+                None => return Ok(()),
+            };
+
+            let prefix = format!(".{}.tmp.", file_name);
+
+            let mut entries = tokio::fs::read_dir(parent).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                if let Ok(name) = entry.file_name().into_string() {
+                    if name.starts_with(&prefix) {
+                        // Try to remove, but ignore errors (best effort)
+                        let _ = tokio::fs::remove_file(entry.path()).await;
+                    }
+                }
+            }
+
+            Ok(())
+        }
+
+        /// Deserialize file content to a JSON value.
+        fn deserialize_content(&self, content: &str) -> Result<serde_json::Value, MigrationError> {
+            match self.strategy.format {
+                FormatStrategy::Json => serde_json::from_str(content)
+                    .map_err(|e| MigrationError::DeserializationError(e.to_string())),
+                FormatStrategy::Toml => {
+                    let toml_value: toml::Value = toml::from_str(content)
+                        .map_err(|e| MigrationError::TomlParseError(e.to_string()))?;
+                    toml_to_json(toml_value)
+                }
+            }
+        }
+
+        /// Extract the entity ID from a file path.
+        fn path_to_id(&self, path: &Path) -> Result<Option<String>, MigrationError> {
+            // Get file stem (filename without extension)
+            let file_stem = match path.file_stem() {
+                Some(stem) => stem.to_string_lossy(),
+                None => return Ok(None),
+            };
+
+            // Decode ID
+            let id = self.decode_id(&file_stem)?;
+            Ok(Some(id))
+        }
+
+        /// Decode a filename stem to an entity ID.
+        fn decode_id(&self, filename_stem: &str) -> Result<String, MigrationError> {
+            match self.strategy.filename_encoding {
+                FilenameEncoding::Direct => {
+                    // Direct encoding: filename is the ID
+                    Ok(filename_stem.to_string())
+                }
+                FilenameEncoding::UrlEncode => {
+                    // URL-decode the filename to get the original ID
+                    urlencoding::decode(filename_stem)
+                        .map(|s| s.into_owned())
+                        .map_err(|e| MigrationError::FilenameEncoding {
+                            id: filename_stem.to_string(),
+                            reason: format!("Failed to URL-decode filename: {}", e),
+                        })
+                }
+                FilenameEncoding::Base64 => {
+                    // Base64-decode the filename using URL-safe encoding without padding
+                    URL_SAFE_NO_PAD
+                        .decode(filename_stem.as_bytes())
+                        .map_err(|e| MigrationError::FilenameEncoding {
+                            id: filename_stem.to_string(),
+                            reason: format!("Failed to Base64-decode filename: {}", e),
+                        })
+                        .and_then(|bytes| {
+                            String::from_utf8(bytes).map_err(|e| MigrationError::FilenameEncoding {
+                                id: filename_stem.to_string(),
+                                reason: format!(
+                                    "Failed to convert Base64-decoded bytes to UTF-8: {}",
+                                    e
+                                ),
+                            })
+                        })
+                }
+            }
+        }
+    }
+
+    // Async tests
+    #[cfg(all(test, feature = "async"))]
+    mod async_tests {
+        use super::*;
+        use crate::{FromDomain, IntoDomain, MigratesTo, Versioned};
+        use serde::{Deserialize, Serialize};
+        use tempfile::TempDir;
+
+        // Test entity types (reused from sync tests)
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        struct SessionV1_0_0 {
+            id: String,
+            user_id: String,
+        }
+
+        impl Versioned for SessionV1_0_0 {
+            const VERSION: &'static str = "1.0.0";
+        }
+
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        struct SessionV1_1_0 {
+            id: String,
+            user_id: String,
+            created_at: Option<String>,
+        }
+
+        impl Versioned for SessionV1_1_0 {
+            const VERSION: &'static str = "1.1.0";
+        }
+
+        impl MigratesTo<SessionV1_1_0> for SessionV1_0_0 {
+            fn migrate(self) -> SessionV1_1_0 {
+                SessionV1_1_0 {
+                    id: self.id,
+                    user_id: self.user_id,
+                    created_at: None,
+                }
+            }
+        }
+
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        struct SessionEntity {
+            id: String,
+            user_id: String,
+            created_at: Option<String>,
+        }
+
+        impl IntoDomain<SessionEntity> for SessionV1_1_0 {
+            fn into_domain(self) -> SessionEntity {
+                SessionEntity {
+                    id: self.id,
+                    user_id: self.user_id,
+                    created_at: self.created_at,
+                }
+            }
+        }
+
+        impl FromDomain<SessionEntity> for SessionV1_1_0 {
+            fn from_domain(domain: SessionEntity) -> Self {
+                SessionV1_1_0 {
+                    id: domain.id,
+                    user_id: domain.user_id,
+                    created_at: domain.created_at,
+                }
+            }
+        }
+
+        fn setup_session_migrator() -> Migrator {
+            let path = Migrator::define("session")
+                .from::<SessionV1_0_0>()
+                .step::<SessionV1_1_0>()
+                .into_with_save::<SessionEntity>();
+
+            let mut migrator = Migrator::new();
+            migrator.register(path).unwrap();
+            migrator
+        }
+
+        #[tokio::test]
+        async fn test_async_dir_storage_new_creates_directory() {
+            let temp_dir = TempDir::new().unwrap();
+            let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+                temp_dir.path().to_path_buf(),
+            ));
+
+            let migrator = Migrator::new();
+            let strategy = DirStorageStrategy::default();
+
+            let storage = AsyncDirStorage::new(paths, "sessions", migrator, strategy)
+                .await
+                .unwrap();
+
+            // Verify directory was created
+            assert!(storage.base_path.exists());
+            assert!(storage.base_path.is_dir());
+            assert!(storage.base_path.ends_with("data/testapp/sessions"));
+        }
+
+        #[tokio::test]
+        async fn test_async_dir_storage_save_and_load_roundtrip() {
+            let temp_dir = TempDir::new().unwrap();
+            let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+                temp_dir.path().to_path_buf(),
+            ));
+
+            let migrator = setup_session_migrator();
+            let strategy = DirStorageStrategy::default();
+            let storage = AsyncDirStorage::new(paths, "sessions", migrator, strategy)
+                .await
+                .unwrap();
+
+            // Test multiple sessions
+            let sessions = vec![
+                SessionEntity {
+                    id: "session-1".to_string(),
+                    user_id: "user-1".to_string(),
+                    created_at: Some("2024-01-01".to_string()),
+                },
+                SessionEntity {
+                    id: "session-2".to_string(),
+                    user_id: "user-2".to_string(),
+                    created_at: None,
+                },
+                SessionEntity {
+                    id: "session-3".to_string(),
+                    user_id: "user-3".to_string(),
+                    created_at: Some("2024-03-01".to_string()),
+                },
+            ];
+
+            // Save all sessions
+            for session in &sessions {
+                storage
+                    .save("session", &session.id, session.clone())
+                    .await
+                    .unwrap();
+            }
+
+            // Load and verify each session
+            for session in &sessions {
+                let loaded: SessionEntity = storage.load("session", &session.id).await.unwrap();
+                assert_eq!(loaded.id, session.id);
+                assert_eq!(loaded.user_id, session.user_id);
+                assert_eq!(loaded.created_at, session.created_at);
+            }
+        }
+
+        #[tokio::test]
+        async fn test_async_dir_storage_list_ids() {
+            let temp_dir = TempDir::new().unwrap();
+            let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+                temp_dir.path().to_path_buf(),
+            ));
+
+            let migrator = setup_session_migrator();
+            let strategy = DirStorageStrategy::default();
+            let storage = AsyncDirStorage::new(paths, "sessions", migrator, strategy)
+                .await
+                .unwrap();
+
+            // Save multiple sessions
+            let ids = vec!["session-c", "session-a", "session-b"];
+            for id in &ids {
+                let session = SessionEntity {
+                    id: id.to_string(),
+                    user_id: "user".to_string(),
+                    created_at: None,
+                };
+                storage.save("session", id, session).await.unwrap();
+            }
+
+            // List IDs
+            let listed_ids = storage.list_ids().await.unwrap();
+            assert_eq!(listed_ids.len(), 3);
+            // Should be sorted
+            assert_eq!(listed_ids, vec!["session-a", "session-b", "session-c"]);
+        }
+
+        #[tokio::test]
+        async fn test_async_dir_storage_load_all() {
+            let temp_dir = TempDir::new().unwrap();
+            let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+                temp_dir.path().to_path_buf(),
+            ));
+
+            let migrator = setup_session_migrator();
+            let strategy = DirStorageStrategy::default();
+            let storage = AsyncDirStorage::new(paths, "sessions", migrator, strategy)
+                .await
+                .unwrap();
+
+            // Save multiple sessions
+            let sessions = vec![
+                SessionEntity {
+                    id: "session-x".to_string(),
+                    user_id: "user-x".to_string(),
+                    created_at: Some("2024-01-01".to_string()),
+                },
+                SessionEntity {
+                    id: "session-y".to_string(),
+                    user_id: "user-y".to_string(),
+                    created_at: None,
+                },
+                SessionEntity {
+                    id: "session-z".to_string(),
+                    user_id: "user-z".to_string(),
+                    created_at: Some("2024-03-01".to_string()),
+                },
+            ];
+
+            for session in &sessions {
+                storage
+                    .save("session", &session.id, session.clone())
+                    .await
+                    .unwrap();
+            }
+
+            // Load all
+            let results: Vec<(String, SessionEntity)> =
+                storage.load_all("session").await.unwrap();
+            assert_eq!(results.len(), 3);
+
+            // Verify all sessions are loaded
+            for (id, loaded) in &results {
+                let original = sessions.iter().find(|s| &s.id == id).unwrap();
+                assert_eq!(loaded.id, original.id);
+                assert_eq!(loaded.user_id, original.user_id);
+                assert_eq!(loaded.created_at, original.created_at);
+            }
+        }
+
+        #[tokio::test]
+        async fn test_async_dir_storage_delete() {
+            let temp_dir = TempDir::new().unwrap();
+            let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+                temp_dir.path().to_path_buf(),
+            ));
+
+            let migrator = setup_session_migrator();
+            let strategy = DirStorageStrategy::default();
+            let storage = AsyncDirStorage::new(paths, "sessions", migrator, strategy)
+                .await
+                .unwrap();
+
+            // Save a session
+            let session = SessionEntity {
+                id: "session-delete".to_string(),
+                user_id: "user-delete".to_string(),
+                created_at: None,
+            };
+            storage
+                .save("session", "session-delete", session)
+                .await
+                .unwrap();
+
+            // Verify it exists
+            assert!(storage.exists("session-delete").await.unwrap());
+
+            // Delete it
+            storage.delete("session-delete").await.unwrap();
+
+            // Verify it doesn't exist
+            assert!(!storage.exists("session-delete").await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn test_async_dir_storage_filename_encoding_url_roundtrip() {
+            let temp_dir = TempDir::new().unwrap();
+            let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+                temp_dir.path().to_path_buf(),
+            ));
+
+            let migrator = setup_session_migrator();
+            let strategy =
+                DirStorageStrategy::default().with_filename_encoding(FilenameEncoding::UrlEncode);
+            let storage = AsyncDirStorage::new(paths, "sessions", migrator, strategy)
+                .await
+                .unwrap();
+
+            // Use an ID with special characters that need URL encoding
+            let complex_id = "user@example.com/path?query=1";
+            let session = SessionEntity {
+                id: complex_id.to_string(),
+                user_id: "user-special".to_string(),
+                created_at: Some("2024-05-01".to_string()),
+            };
+
+            // Save the entity
+            storage
+                .save("session", complex_id, session.clone())
+                .await
+                .unwrap();
+
+            // Verify the file was created with encoded filename
+            let encoded_id = urlencoding::encode(complex_id);
+            let file_path = storage.base_path.join(format!("{}.json", encoded_id));
+            assert!(file_path.exists());
+
+            // Load it back
+            let loaded: SessionEntity = storage.load("session", complex_id).await.unwrap();
+            assert_eq!(loaded.id, session.id);
+            assert_eq!(loaded.user_id, session.user_id);
+            assert_eq!(loaded.created_at, session.created_at);
+
+            // Verify list_ids works correctly
+            let ids = storage.list_ids().await.unwrap();
+            assert_eq!(ids.len(), 1);
+            assert_eq!(ids[0], complex_id);
+        }
+
+        #[tokio::test]
+        async fn test_async_dir_storage_filename_encoding_base64_roundtrip() {
+            let temp_dir = TempDir::new().unwrap();
+            let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+                temp_dir.path().to_path_buf(),
+            ));
+
+            let migrator = setup_session_migrator();
+            let strategy =
+                DirStorageStrategy::default().with_filename_encoding(FilenameEncoding::Base64);
+            let storage = AsyncDirStorage::new(paths, "sessions", migrator, strategy)
+                .await
+                .unwrap();
+
+            // Use a complex ID with various special characters
+            let complex_id = "user@example.com/path?query=1&special=!@#$%";
+            let session = SessionEntity {
+                id: complex_id.to_string(),
+                user_id: "user-base64".to_string(),
+                created_at: Some("2024-06-01".to_string()),
+            };
+
+            // Save the entity
+            storage
+                .save("session", complex_id, session.clone())
+                .await
+                .unwrap();
+
+            // Verify the file was created with Base64-encoded filename
+            let encoded_id = URL_SAFE_NO_PAD.encode(complex_id.as_bytes());
+            let file_path = storage.base_path.join(format!("{}.json", encoded_id));
+            assert!(file_path.exists());
+
+            // Load it back
+            let loaded: SessionEntity = storage.load("session", complex_id).await.unwrap();
+            assert_eq!(loaded.id, session.id);
+            assert_eq!(loaded.user_id, session.user_id);
+            assert_eq!(loaded.created_at, session.created_at);
+
+            // Verify list_ids works correctly
+            let ids = storage.list_ids().await.unwrap();
+            assert_eq!(ids.len(), 1);
+            assert_eq!(ids[0], complex_id);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

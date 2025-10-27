@@ -155,10 +155,14 @@ pub use storage::{
 // Re-export dir_storage types
 pub use dir_storage::{DirStorage, DirStorageStrategy, FilenameEncoding};
 
+#[cfg(feature = "async")]
+pub use dir_storage::AsyncDirStorage;
+
 // Re-export paths types
 pub use paths::{AppPaths, PathStrategy};
 
 // Re-export async-trait for user convenience
+#[cfg(feature = "async")]
 pub use async_trait::async_trait;
 
 /// A trait for versioned data schemas.
@@ -290,6 +294,7 @@ pub trait Queryable {
 ///
 /// Use this trait when migrations need to perform asynchronous operations
 /// such as database queries or API calls.
+#[cfg(feature = "async")]
 #[async_trait::async_trait]
 pub trait AsyncMigratesTo<T: Versioned>: Versioned + Send {
     /// Asynchronously migrates from the current version to the target version.
@@ -304,6 +309,7 @@ pub trait AsyncMigratesTo<T: Versioned>: Versioned + Send {
 ///
 /// Use this trait when converting to the domain model requires asynchronous
 /// operations such as fetching additional data from external sources.
+#[cfg(feature = "async")]
 #[async_trait::async_trait]
 pub trait AsyncIntoDomain<D>: Versioned + Send {
     /// Asynchronously converts this versioned data into the domain model.
