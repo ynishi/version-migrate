@@ -124,6 +124,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod dir_storage;
 pub mod errors;
 mod migrator;
 pub mod paths;
@@ -150,6 +151,9 @@ pub use migrator::{ConfigMigrator, MigrationPath, Migrator};
 pub use storage::{
     AtomicWriteConfig, FileStorage, FileStorageStrategy, FormatStrategy, LoadBehavior,
 };
+
+// Re-export dir_storage types
+pub use dir_storage::{DirStorage, DirStorageStrategy, FilenameEncoding};
 
 // Re-export paths types
 pub use paths::{AppPaths, PathStrategy};

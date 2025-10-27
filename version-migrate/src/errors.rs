@@ -90,6 +90,15 @@ pub enum MigrationError {
     /// Failed to resolve path.
     #[error("Failed to resolve path: {0}")]
     PathResolution(String),
+
+    /// Failed to encode filename.
+    #[error("Failed to encode filename for ID '{id}': {reason}")]
+    FilenameEncoding {
+        /// The entity ID that failed to encode.
+        id: String,
+        /// The reason for the encoding failure.
+        reason: String,
+    },
 }
 
 #[cfg(test)]
