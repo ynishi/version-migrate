@@ -39,6 +39,8 @@
 //! ```
 
 use crate::{AppPaths, MigrationError, Migrator};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -322,12 +324,12 @@ impl DirStorage {
                 }
             }
             FilenameEncoding::UrlEncode => {
-                // TODO: Implement URL encoding
-                todo!("UrlEncode is not yet implemented")
+                // URL-encode the ID for filesystem safety
+                Ok(urlencoding::encode(id).into_owned())
             }
             FilenameEncoding::Base64 => {
-                // TODO: Implement Base64 encoding
-                todo!("Base64 encoding is not yet implemented")
+                // Base64-encode the ID using URL-safe encoding without padding
+                Ok(URL_SAFE_NO_PAD.encode(id.as_bytes()))
             }
         }
     }
@@ -811,12 +813,28 @@ impl DirStorage {
                 Ok(filename_stem.to_string())
             }
             FilenameEncoding::UrlEncode => {
-                // TODO: Implement URL decoding
-                todo!("UrlEncode decoding is not yet implemented")
+                // URL-decode the filename to get the original ID
+                urlencoding::decode(filename_stem)
+                    .map(|s| s.into_owned())
+                    .map_err(|e| MigrationError::FilenameEncoding {
+                        id: filename_stem.to_string(),
+                        reason: format!("Failed to URL-decode filename: {}", e),
+                    })
             }
             FilenameEncoding::Base64 => {
-                // TODO: Implement Base64 decoding
-                todo!("Base64 decoding is not yet implemented")
+                // Base64-decode the filename using URL-safe encoding without padding
+                URL_SAFE_NO_PAD
+                    .decode(filename_stem.as_bytes())
+                    .map_err(|e| MigrationError::FilenameEncoding {
+                        id: filename_stem.to_string(),
+                        reason: format!("Failed to Base64-decode filename: {}", e),
+                    })
+                    .and_then(|bytes| {
+                        String::from_utf8(bytes).map_err(|e| MigrationError::FilenameEncoding {
+                            id: filename_stem.to_string(),
+                            reason: format!("Failed to convert Base64-decoded bytes to UTF-8: {}", e),
+                        })
+                    })
             }
         }
     }
@@ -1517,5 +1535,136 @@ mod tests {
         // load_all should fail
         let result: Result<Vec<(String, SessionEntity)>, _> = storage.load_all("session");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dir_storage_filename_encoding_url_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+            temp_dir.path().to_path_buf(),
+        ));
+
+        let migrator = setup_session_migrator();
+        let strategy = DirStorageStrategy::default()
+            .with_filename_encoding(FilenameEncoding::UrlEncode);
+        let storage = DirStorage::new(paths, "sessions", migrator, strategy).unwrap();
+
+        // Use an ID with special characters that need URL encoding
+        let complex_id = "user@example.com/path?query=1";
+        let session = SessionEntity {
+            id: complex_id.to_string(),
+            user_id: "user-special".to_string(),
+            created_at: Some("2024-05-01".to_string()),
+        };
+
+        // Save the entity
+        storage.save("session", complex_id, session.clone()).unwrap();
+
+        // Verify the file was created with encoded filename
+        let encoded_id = urlencoding::encode(complex_id);
+        let file_path = storage.base_path.join(format!("{}.json", encoded_id));
+        assert!(file_path.exists());
+
+        // Load it back
+        let loaded: SessionEntity = storage.load("session", complex_id).unwrap();
+        assert_eq!(loaded.id, session.id);
+        assert_eq!(loaded.user_id, session.user_id);
+        assert_eq!(loaded.created_at, session.created_at);
+
+        // Verify list_ids works correctly
+        let ids = storage.list_ids().unwrap();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], complex_id);
+    }
+
+    #[test]
+    fn test_dir_storage_filename_encoding_base64_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+            temp_dir.path().to_path_buf(),
+        ));
+
+        let migrator = setup_session_migrator();
+        let strategy = DirStorageStrategy::default()
+            .with_filename_encoding(FilenameEncoding::Base64);
+        let storage = DirStorage::new(paths, "sessions", migrator, strategy).unwrap();
+
+        // Use a complex ID with various special characters
+        let complex_id = "user@example.com/path?query=1&special=!@#$%";
+        let session = SessionEntity {
+            id: complex_id.to_string(),
+            user_id: "user-base64".to_string(),
+            created_at: Some("2024-06-01".to_string()),
+        };
+
+        // Save the entity
+        storage.save("session", complex_id, session.clone()).unwrap();
+
+        // Verify the file was created with Base64-encoded filename
+        let encoded_id = URL_SAFE_NO_PAD.encode(complex_id.as_bytes());
+        let file_path = storage.base_path.join(format!("{}.json", encoded_id));
+        assert!(file_path.exists());
+
+        // Load it back
+        let loaded: SessionEntity = storage.load("session", complex_id).unwrap();
+        assert_eq!(loaded.id, session.id);
+        assert_eq!(loaded.user_id, session.user_id);
+        assert_eq!(loaded.created_at, session.created_at);
+
+        // Verify list_ids works correctly
+        let ids = storage.list_ids().unwrap();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], complex_id);
+    }
+
+    #[test]
+    fn test_decode_id_error_handling() {
+        let temp_dir = TempDir::new().unwrap();
+        let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+            temp_dir.path().to_path_buf(),
+        ));
+
+        // Test UrlEncode decoding with invalid percent encoding
+        // The urlencoding crate handles most cases gracefully, but we can test
+        // that it properly decodes even with partial sequences (which it does)
+        let migrator_url = setup_session_migrator();
+        let strategy_url = DirStorageStrategy::default()
+            .with_filename_encoding(FilenameEncoding::UrlEncode);
+        let storage_url = DirStorage::new(paths.clone(), "sessions_url", migrator_url, strategy_url).unwrap();
+
+        // Invalid UTF-8 percent encoding - this should fail
+        let invalid_url_encoded = "%C0%C1";  // Invalid UTF-8 sequence
+        let result = storage_url.decode_id(invalid_url_encoded);
+        assert!(result.is_err());
+        if let Err(MigrationError::FilenameEncoding { id, reason }) = result {
+            assert_eq!(id, invalid_url_encoded);
+            assert!(reason.contains("Failed to URL-decode filename"));
+        }
+
+        // Test Base64 decoding with invalid input
+        let migrator_base64 = setup_session_migrator();
+        let strategy_base64 = DirStorageStrategy::default()
+            .with_filename_encoding(FilenameEncoding::Base64);
+        let storage_base64 = DirStorage::new(paths, "sessions_base64", migrator_base64, strategy_base64).unwrap();
+
+        // Invalid Base64 string (contains invalid characters)
+        let invalid_base64 = "!!!invalid@@@";
+        let result = storage_base64.decode_id(invalid_base64);
+        assert!(result.is_err());
+        if let Err(MigrationError::FilenameEncoding { id, reason }) = result {
+            assert_eq!(id, invalid_base64);
+            assert!(reason.contains("Failed to Base64-decode filename"));
+        }
+
+        // Test Base64 with valid Base64 but invalid UTF-8
+        // Create a Base64 string from invalid UTF-8 bytes
+        let invalid_utf8_bytes = vec![0xFF, 0xFE, 0xFD];
+        let valid_base64_invalid_utf8 = URL_SAFE_NO_PAD.encode(&invalid_utf8_bytes);
+        let result = storage_base64.decode_id(&valid_base64_invalid_utf8);
+        assert!(result.is_err());
+        if let Err(MigrationError::FilenameEncoding { id, reason }) = result {
+            assert_eq!(id, valid_base64_invalid_utf8);
+            assert!(reason.contains("Failed to convert Base64-decoded bytes to UTF-8"));
+        }
     }
 }
