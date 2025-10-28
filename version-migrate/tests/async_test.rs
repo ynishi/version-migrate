@@ -108,3 +108,27 @@ async fn test_async_full_migration_chain() {
     assert_eq!(domain.description, None);
     assert_eq!(domain.enriched_data, Some("enriched-task-3".to_string()));
 }
+
+#[tokio::test]
+async fn test_async_dir_storage_base_path() {
+    use tempfile::TempDir;
+    use version_migrate::{AppPaths, AsyncDirStorage, DirStorageStrategy, Migrator};
+
+    let temp_dir = TempDir::new().unwrap();
+    let domain_name = "test_async_sessions";
+    let paths = AppPaths::new("testapp").data_strategy(version_migrate::PathStrategy::CustomBase(
+        temp_dir.path().to_path_buf(),
+    ));
+
+    let migrator = Migrator::new();
+    let strategy = DirStorageStrategy::default();
+
+    let storage = AsyncDirStorage::new(paths, domain_name, migrator, strategy)
+        .await
+        .unwrap();
+
+    // Verify base_path() returns the expected path
+    let returned_path = storage.base_path();
+    assert!(returned_path.ends_with(domain_name));
+    assert!(returned_path.exists());
+}

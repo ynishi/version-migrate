@@ -289,6 +289,15 @@ impl FileStorage {
         self.save()
     }
 
+    /// Returns a reference to the storage file path.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the file path where the configuration is stored.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// Get path to temporary file for atomic writes.
     fn get_temp_path(&self) -> Result<PathBuf, MigrationError> {
         let parent = self.path.parent().ok_or_else(|| {
@@ -642,5 +651,19 @@ mod tests {
             .collect();
 
         assert_eq!(tmp_files.len(), 0, "Temporary files should be cleaned up");
+    }
+
+    #[test]
+    fn test_file_storage_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test_config.toml");
+        let migrator = setup_migrator();
+        let strategy = FileStorageStrategy::default();
+
+        let storage = FileStorage::new(file_path.clone(), migrator, strategy).unwrap();
+
+        // Verify path() returns the expected path
+        let returned_path = storage.path();
+        assert_eq!(returned_path, file_path.as_path());
     }
 }

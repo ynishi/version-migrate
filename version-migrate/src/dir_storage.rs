@@ -737,6 +737,15 @@ impl DirStorage {
         Ok(())
     }
 
+    /// Returns a reference to the base directory path.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the resolved base directory path where entities are stored.
+    pub fn base_path(&self) -> &Path {
+        &self.base_path
+    }
+
     /// Deserialize file content to a JSON value.
     ///
     /// # Arguments
@@ -1185,6 +1194,15 @@ mod async_impl {
             }
 
             Ok(())
+        }
+
+        /// Returns a reference to the base directory path.
+        ///
+        /// # Returns
+        ///
+        /// A reference to the resolved base directory path where entities are stored.
+        pub fn base_path(&self) -> &Path {
+            &self.base_path
         }
 
         // ====================================================================
@@ -2605,5 +2623,24 @@ mod tests {
             assert_eq!(id, valid_base64_invalid_utf8);
             assert!(reason.contains("Failed to convert Base64-decoded bytes to UTF-8"));
         }
+    }
+
+    #[test]
+    fn test_dir_storage_base_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let domain_name = "test_sessions";
+        let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+            temp_dir.path().to_path_buf(),
+        ));
+
+        let migrator = Migrator::new();
+        let strategy = DirStorageStrategy::default();
+
+        let storage = DirStorage::new(paths, domain_name, migrator, strategy).unwrap();
+
+        // Verify base_path() returns the expected path
+        let returned_path = storage.base_path();
+        assert!(returned_path.ends_with(domain_name));
+        assert!(returned_path.exists());
     }
 }

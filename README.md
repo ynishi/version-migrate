@@ -734,6 +734,10 @@ let mut storage = FileStorage::new(
 // Query and update with automatic migration
 let tasks: Vec<TaskEntity> = storage.query("tasks")?;
 storage.update_and_save("tasks", updated_tasks)?;
+
+// Get the file path for debugging or logging
+let file_path = storage.path();
+println!("Config stored at: {}", file_path.display());
 ```
 
 **Features:**
@@ -742,6 +746,7 @@ storage.update_and_save("tasks", updated_tasks)?;
 - **Format Support**: TOML or JSON with automatic conversion
 - **Load Strategies**: Create empty config if missing, or return error
 - **Cleanup**: Automatic cleanup of temporary files (best effort)
+- **Path Access**: `path()` method returns the storage file path for debugging or logging
 
 ### DirStorage: Multi-File Entity Storage
 
@@ -793,6 +798,10 @@ let loaded: SessionEntity = storage.load("session", "user@example.com")?;
 let ids = storage.list_ids()?;
 storage.delete("user@example.com")?;
 
+// Get the base directory path for debugging or logging
+let base_path = storage.base_path();
+println!("Sessions stored in: {}", base_path.display());
+
 
 // =================================================
 // 3b. Use the asynchronous `AsyncDirStorage`
@@ -816,6 +825,10 @@ async fn run_async_storage() -> Result<(), MigrationError> {
     let loaded: SessionEntity = storage.load("session", "user@example.com").await?;
     let ids = storage.list_ids().await?;
     storage.delete("user@example.com").await?;
+
+    // Get the base directory path for debugging or logging
+    let base_path = storage.base_path();
+    println!("Sessions stored in: {}", base_path.display());
 
     Ok(())
 }
