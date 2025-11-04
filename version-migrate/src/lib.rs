@@ -142,7 +142,7 @@ pub use version_migrate_macro::Queryable as DeriveQueryable;
 pub use version_migrate_macro::VersionMigrate;
 
 // Re-export error types
-pub use errors::MigrationError;
+pub use errors::{IoOperationKind, MigrationError};
 
 // Re-export migrator types
 pub use migrator::{ConfigMigrator, MigrationPath, Migrator};

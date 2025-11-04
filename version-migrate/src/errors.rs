@@ -1,9 +1,63 @@
 //! Error types for migration operations.
 
+use std::fmt;
 use thiserror::Error;
+
+/// File I/O operation kind.
+///
+/// Identifies the specific type of I/O operation that failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IoOperationKind {
+    /// Reading from a file
+    Read,
+    /// Writing to a file
+    Write,
+    /// Creating a new file
+    Create,
+    /// Deleting a file
+    Delete,
+    /// Renaming/moving a file
+    Rename,
+    /// Creating a directory
+    CreateDir,
+    /// Reading directory contents
+    ReadDir,
+    /// Syncing file contents to disk
+    Sync,
+}
+
+impl fmt::Display for IoOperationKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read => write!(f, "read"),
+            Self::Write => write!(f, "write"),
+            Self::Create => write!(f, "create"),
+            Self::Delete => write!(f, "delete"),
+            Self::Rename => write!(f, "rename"),
+            Self::CreateDir => write!(f, "create directory"),
+            Self::ReadDir => write!(f, "read directory"),
+            Self::Sync => write!(f, "sync"),
+        }
+    }
+}
+
+/// Format I/O error message with operation, path, context, and error details.
+fn format_io_error(
+    operation: &IoOperationKind,
+    path: &str,
+    context: &Option<String>,
+    error: &str,
+) -> String {
+    if let Some(ctx) = context {
+        format!("Failed to {} {} at '{}': {}", operation, ctx, path, error)
+    } else {
+        format!("Failed to {} file at '{}': {}", operation, path, error)
+    }
+}
 
 /// Error types that can occur during migration operations.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum MigrationError {
     /// Failed to deserialize the data.
     #[error("Failed to deserialize: {0}")]
@@ -57,12 +111,19 @@ pub enum MigrationError {
         to: String,
     },
 
-    /// File I/O error.
-    #[error("File I/O error at '{path}': {error}")]
+    /// File I/O error with detailed operation context.
+    ///
+    /// Provides specific information about which I/O operation failed,
+    /// along with optional context (e.g., "temporary file", "after 3 retries").
+    #[error("{}", format_io_error(.operation, .path, .context, .error))]
     IoError {
+        /// The I/O operation that failed.
+        operation: IoOperationKind,
         /// The file path where the error occurred.
         path: String,
-        /// The underlying I/O error.
+        /// Additional context (e.g., "temporary file", "after 3 retries").
+        context: Option<String>,
+        /// The underlying I/O error message.
         error: String,
     },
 
@@ -193,5 +254,61 @@ mod tests {
         assert!(display.contains("2.0.0"));
         assert!(display.contains("1.0.0"));
         assert!(display.contains("must increase"));
+    }
+
+    #[test]
+    fn test_error_display_io_error_without_context() {
+        let err = MigrationError::IoError {
+            operation: IoOperationKind::Read,
+            path: "/path/to/file.toml".to_string(),
+            context: None,
+            error: "Permission denied".to_string(),
+        };
+        let display = format!("{}", err);
+        assert!(display.contains("Failed to read"));
+        assert!(display.contains("/path/to/file.toml"));
+        assert!(display.contains("Permission denied"));
+    }
+
+    #[test]
+    fn test_error_display_io_error_with_context() {
+        let err = MigrationError::IoError {
+            operation: IoOperationKind::Write,
+            path: "/path/to/tmp.toml".to_string(),
+            context: Some("temporary file".to_string()),
+            error: "Disk full".to_string(),
+        };
+        let display = format!("{}", err);
+        assert!(display.contains("Failed to write"));
+        assert!(display.contains("temporary file"));
+        assert!(display.contains("/path/to/tmp.toml"));
+        assert!(display.contains("Disk full"));
+    }
+
+    #[test]
+    fn test_error_display_io_error_rename_with_retries() {
+        let err = MigrationError::IoError {
+            operation: IoOperationKind::Rename,
+            path: "/path/to/file.toml".to_string(),
+            context: Some("after 3 retries".to_string()),
+            error: "Resource temporarily unavailable".to_string(),
+        };
+        let display = format!("{}", err);
+        assert!(display.contains("Failed to rename"));
+        assert!(display.contains("after 3 retries"));
+        assert!(display.contains("/path/to/file.toml"));
+        assert!(display.contains("Resource temporarily unavailable"));
+    }
+
+    #[test]
+    fn test_io_operation_kind_display() {
+        assert_eq!(IoOperationKind::Read.to_string(), "read");
+        assert_eq!(IoOperationKind::Write.to_string(), "write");
+        assert_eq!(IoOperationKind::Create.to_string(), "create");
+        assert_eq!(IoOperationKind::Delete.to_string(), "delete");
+        assert_eq!(IoOperationKind::Rename.to_string(), "rename");
+        assert_eq!(IoOperationKind::CreateDir.to_string(), "create directory");
+        assert_eq!(IoOperationKind::ReadDir.to_string(), "read directory");
+        assert_eq!(IoOperationKind::Sync.to_string(), "sync");
     }
 }

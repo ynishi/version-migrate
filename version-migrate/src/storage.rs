@@ -2,7 +2,7 @@
 //!
 //! Provides atomic file operations, format conversion, and file locking.
 
-use crate::{ConfigMigrator, MigrationError, Migrator, Queryable};
+use crate::{errors::IoOperationKind, ConfigMigrator, MigrationError, Migrator, Queryable};
 use serde_json::Value as JsonValue;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as IoWrite;
@@ -145,7 +145,9 @@ impl FileStorage {
         // Load file content if it exists
         let json_string = if path.exists() {
             let content = fs::read_to_string(&path).map_err(|e| MigrationError::IoError {
+                operation: IoOperationKind::Read,
                 path: path.display().to_string(),
+                context: None,
                 error: e.to_string(),
             })?;
 
@@ -171,7 +173,9 @@ impl FileStorage {
                 LoadBehavior::CreateIfMissing => "{}".to_string(),
                 LoadBehavior::ErrorIfMissing => {
                     return Err(MigrationError::IoError {
+                        operation: IoOperationKind::Read,
                         path: path.display().to_string(),
+                        context: None,
                         error: "File not found".to_string(),
                     });
                 }
@@ -197,7 +201,9 @@ impl FileStorage {
         if let Some(parent) = self.path.parent() {
             if !parent.exists() {
                 fs::create_dir_all(parent).map_err(|e| MigrationError::IoError {
+                    operation: IoOperationKind::CreateDir,
                     path: parent.display().to_string(),
+                    context: Some("parent directory".to_string()),
                     error: e.to_string(),
                 })?;
             }
@@ -220,20 +226,26 @@ impl FileStorage {
         // Write to temporary file
         let tmp_path = self.get_temp_path()?;
         let mut tmp_file = File::create(&tmp_path).map_err(|e| MigrationError::IoError {
+            operation: IoOperationKind::Create,
             path: tmp_path.display().to_string(),
+            context: Some("temporary file".to_string()),
             error: e.to_string(),
         })?;
 
         tmp_file
             .write_all(content.as_bytes())
             .map_err(|e| MigrationError::IoError {
+                operation: IoOperationKind::Write,
                 path: tmp_path.display().to_string(),
+                context: Some("temporary file".to_string()),
                 error: e.to_string(),
             })?;
 
         // Ensure data is written to disk
         tmp_file.sync_all().map_err(|e| MigrationError::IoError {
+            operation: IoOperationKind::Sync,
             path: tmp_path.display().to_string(),
+            context: Some("temporary file".to_string()),
             error: e.to_string(),
         })?;
 
@@ -335,12 +347,13 @@ impl FileStorage {
         }
 
         Err(MigrationError::IoError {
+            operation: IoOperationKind::Rename,
             path: self.path.display().to_string(),
-            error: format!(
-                "Failed to rename after {} attempts: {}",
-                self.strategy.atomic_write.retry_count,
-                last_error.unwrap()
-            ),
+            context: Some(format!(
+                "after {} retries",
+                self.strategy.atomic_write.retry_count
+            )),
+            error: last_error.unwrap().to_string(),
         })
     }
 

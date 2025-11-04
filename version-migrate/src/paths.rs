@@ -2,7 +2,7 @@
 //!
 //! Provides unified path resolution strategies across different platforms.
 
-use crate::MigrationError;
+use crate::{errors::IoOperationKind, MigrationError};
 use std::path::PathBuf;
 
 /// Path resolution strategy.
@@ -243,7 +243,9 @@ impl AppPaths {
     fn ensure_dir_exists(&self, path: &PathBuf) -> Result<(), MigrationError> {
         if !path.exists() {
             std::fs::create_dir_all(path).map_err(|e| MigrationError::IoError {
+                operation: IoOperationKind::CreateDir,
                 path: path.display().to_string(),
+                context: None,
                 error: e.to_string(),
             })?;
         }

@@ -38,7 +38,7 @@
 //! let loaded: SessionEntity = storage.load("session", "session-123")?;
 //! ```
 
-use crate::{AppPaths, MigrationError, Migrator};
+use crate::{errors::IoOperationKind, AppPaths, MigrationError, Migrator};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use std::fs::{self, File};
@@ -201,7 +201,9 @@ impl DirStorage {
         // Create directory if it doesn't exist
         if !base_path.exists() {
             std::fs::create_dir_all(&base_path).map_err(|e| MigrationError::IoError {
+                operation: IoOperationKind::CreateDir,
                 path: base_path.display().to_string(),
+                context: Some("storage base directory".to_string()),
                 error: e.to_string(),
             })?;
         }
@@ -386,7 +388,9 @@ impl DirStorage {
         if let Some(parent) = path.parent() {
             if !parent.exists() {
                 fs::create_dir_all(parent).map_err(|e| MigrationError::IoError {
+                    operation: IoOperationKind::CreateDir,
                     path: parent.display().to_string(),
+                    context: Some("parent directory".to_string()),
                     error: e.to_string(),
                 })?;
             }
@@ -397,20 +401,26 @@ impl DirStorage {
 
         // Write to temporary file
         let mut tmp_file = File::create(&tmp_path).map_err(|e| MigrationError::IoError {
+            operation: IoOperationKind::Create,
             path: tmp_path.display().to_string(),
+            context: Some("temporary file".to_string()),
             error: e.to_string(),
         })?;
 
         tmp_file
             .write_all(content.as_bytes())
             .map_err(|e| MigrationError::IoError {
+                operation: IoOperationKind::Write,
                 path: tmp_path.display().to_string(),
+                context: Some("temporary file".to_string()),
                 error: e.to_string(),
             })?;
 
         // Ensure data is written to disk
         tmp_file.sync_all().map_err(|e| MigrationError::IoError {
+            operation: IoOperationKind::Sync,
             path: tmp_path.display().to_string(),
+            context: Some("temporary file".to_string()),
             error: e.to_string(),
         })?;
 
@@ -490,12 +500,13 @@ impl DirStorage {
         }
 
         Err(MigrationError::IoError {
+            operation: IoOperationKind::Rename,
             path: target_path.display().to_string(),
-            error: format!(
-                "Failed to rename after {} attempts: {}",
-                self.strategy.atomic_write.retry_count,
-                last_error.unwrap()
-            ),
+            context: Some(format!(
+                "after {} retries",
+                self.strategy.atomic_write.retry_count
+            )),
+            error: last_error.unwrap().to_string(),
         })
     }
 
@@ -571,14 +582,18 @@ impl DirStorage {
         // Check if file exists
         if !file_path.exists() {
             return Err(MigrationError::IoError {
+                operation: IoOperationKind::Read,
                 path: file_path.display().to_string(),
+                context: None,
                 error: "File not found".to_string(),
             });
         }
 
         // Read file content
         let content = fs::read_to_string(&file_path).map_err(|e| MigrationError::IoError {
+            operation: IoOperationKind::Read,
             path: file_path.display().to_string(),
+            context: None,
             error: e.to_string(),
         })?;
 
@@ -612,7 +627,9 @@ impl DirStorage {
     pub fn list_ids(&self) -> Result<Vec<String>, MigrationError> {
         // Read directory
         let entries = fs::read_dir(&self.base_path).map_err(|e| MigrationError::IoError {
+            operation: IoOperationKind::ReadDir,
             path: self.base_path.display().to_string(),
+            context: None,
             error: e.to_string(),
         })?;
 
@@ -621,7 +638,9 @@ impl DirStorage {
 
         for entry in entries {
             let entry = entry.map_err(|e| MigrationError::IoError {
+                operation: IoOperationKind::ReadDir,
                 path: self.base_path.display().to_string(),
+                context: Some("directory entry".to_string()),
                 error: e.to_string(),
             })?;
 
@@ -729,7 +748,9 @@ impl DirStorage {
 
         if file_path.exists() {
             fs::remove_file(&file_path).map_err(|e| MigrationError::IoError {
+                operation: IoOperationKind::Delete,
                 path: file_path.display().to_string(),
+                context: None,
                 error: e.to_string(),
             })?;
         }
@@ -883,7 +904,7 @@ pub use async_impl::AsyncDirStorage;
 
 #[cfg(feature = "async")]
 mod async_impl {
-    use crate::{AppPaths, MigrationError, Migrator};
+    use crate::{errors::IoOperationKind, AppPaths, MigrationError, Migrator};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     use std::path::{Path, PathBuf};
@@ -936,7 +957,9 @@ mod async_impl {
             if !tokio::fs::try_exists(&base_path).await.unwrap_or(false) {
                 tokio::fs::create_dir_all(&base_path).await.map_err(|e| {
                     MigrationError::IoError {
+                        operation: IoOperationKind::CreateDir,
                         path: base_path.display().to_string(),
+                        context: Some("storage base directory (async)".to_string()),
                         error: e.to_string(),
                     }
                 })?;
@@ -1029,7 +1052,9 @@ mod async_impl {
             // Check if file exists (async)
             if !tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
                 return Err(MigrationError::IoError {
+                    operation: IoOperationKind::Read,
                     path: file_path.display().to_string(),
+                    context: Some("async".to_string()),
                     error: "File not found".to_string(),
                 });
             }
@@ -1037,7 +1062,9 @@ mod async_impl {
             // Read file content (async)
             let content = tokio::fs::read_to_string(&file_path).await.map_err(|e| {
                 MigrationError::IoError {
+                    operation: IoOperationKind::Read,
                     path: file_path.display().to_string(),
+                    context: Some("async".to_string()),
                     error: e.to_string(),
                 }
             })?;
@@ -1064,7 +1091,9 @@ mod async_impl {
             // Read directory (async)
             let mut entries = tokio::fs::read_dir(&self.base_path).await.map_err(|e| {
                 MigrationError::IoError {
+                    operation: IoOperationKind::ReadDir,
                     path: self.base_path.display().to_string(),
+                    context: Some("async".to_string()),
                     error: e.to_string(),
                 }
             })?;
@@ -1077,7 +1106,9 @@ mod async_impl {
                     .next_entry()
                     .await
                     .map_err(|e| MigrationError::IoError {
+                        operation: IoOperationKind::ReadDir,
                         path: self.base_path.display().to_string(),
+                        context: Some("directory entry (async)".to_string()),
                         error: e.to_string(),
                     })?
             {
@@ -1088,7 +1119,9 @@ mod async_impl {
                     tokio::fs::metadata(&path)
                         .await
                         .map_err(|e| MigrationError::IoError {
+                            operation: IoOperationKind::Read,
                             path: path.display().to_string(),
+                            context: Some("metadata (async)".to_string()),
                             error: e.to_string(),
                         })?;
 
@@ -1161,7 +1194,9 @@ mod async_impl {
                 tokio::fs::metadata(&file_path)
                     .await
                     .map_err(|e| MigrationError::IoError {
+                        operation: IoOperationKind::Read,
                         path: file_path.display().to_string(),
+                        context: Some("metadata (async)".to_string()),
                         error: e.to_string(),
                     })?;
 
@@ -1188,7 +1223,9 @@ mod async_impl {
                 tokio::fs::remove_file(&file_path)
                     .await
                     .map_err(|e| MigrationError::IoError {
+                        operation: IoOperationKind::Delete,
                         path: file_path.display().to_string(),
+                        context: Some("async".to_string()),
                         error: e.to_string(),
                     })?;
             }
@@ -1268,7 +1305,9 @@ mod async_impl {
                 if !tokio::fs::try_exists(parent).await.unwrap_or(false) {
                     tokio::fs::create_dir_all(parent).await.map_err(|e| {
                         MigrationError::IoError {
+                            operation: IoOperationKind::CreateDir,
                             path: parent.display().to_string(),
+                            context: Some("parent directory (async)".to_string()),
                             error: e.to_string(),
                         }
                     })?;
@@ -1283,7 +1322,9 @@ mod async_impl {
                 tokio::fs::File::create(&tmp_path)
                     .await
                     .map_err(|e| MigrationError::IoError {
+                        operation: IoOperationKind::Create,
                         path: tmp_path.display().to_string(),
+                        context: Some("temporary file (async)".to_string()),
                         error: e.to_string(),
                     })?;
 
@@ -1291,7 +1332,9 @@ mod async_impl {
                 .write_all(content.as_bytes())
                 .await
                 .map_err(|e| MigrationError::IoError {
+                    operation: IoOperationKind::Write,
                     path: tmp_path.display().to_string(),
+                    context: Some("temporary file (async)".to_string()),
                     error: e.to_string(),
                 })?;
 
@@ -1300,7 +1343,9 @@ mod async_impl {
                 .sync_all()
                 .await
                 .map_err(|e| MigrationError::IoError {
+                    operation: IoOperationKind::Sync,
                     path: tmp_path.display().to_string(),
+                    context: Some("temporary file (async)".to_string()),
                     error: e.to_string(),
                 })?;
 
@@ -1357,12 +1402,13 @@ mod async_impl {
             }
 
             Err(MigrationError::IoError {
+                operation: IoOperationKind::Rename,
                 path: target_path.display().to_string(),
-                error: format!(
-                    "Failed to rename after {} attempts: {}",
-                    self.strategy.atomic_write.retry_count,
-                    last_error.unwrap()
-                ),
+                context: Some(format!(
+                    "after {} retries (async)",
+                    self.strategy.atomic_write.retry_count
+                )),
+                error: last_error.unwrap().to_string(),
             })
         }
 
