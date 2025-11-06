@@ -253,6 +253,124 @@ impl AppPaths {
     }
 }
 
+/// Preference path manager for OS-recommended preference/configuration directories.
+///
+/// Unlike `AppPaths`, `PrefPath` strictly follows OS-specific conventions:
+/// - macOS: `~/Library/Preferences/`
+/// - Linux: `~/.config/` (XDG_CONFIG_HOME)
+/// - Windows: `%APPDATA%`
+///
+/// # Example
+///
+/// ```ignore
+/// use version_migrate::PrefPath;
+///
+/// let pref = PrefPath::new("com.example.myapp");
+/// let pref_file = pref.pref_file("settings.plist")?;
+/// // On macOS: ~/Library/Preferences/com.example.myapp/settings.plist
+/// // On Linux: ~/.config/com.example.myapp/settings.plist
+/// ```
+#[derive(Debug, Clone)]
+pub struct PrefPath {
+    app_name: String,
+}
+
+impl PrefPath {
+    /// Create a new preference path manager.
+    ///
+    /// # Arguments
+    ///
+    /// * `app_name` - Application identifier (e.g., "com.example.myapp" for macOS bundle ID style)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let pref = PrefPath::new("com.example.myapp");
+    /// ```
+    pub fn new(app_name: impl Into<String>) -> Self {
+        Self {
+            app_name: app_name.into(),
+        }
+    }
+
+    /// Get the preference directory path.
+    ///
+    /// Creates the directory if it doesn't exist.
+    ///
+    /// # Returns
+    ///
+    /// The resolved preference directory path:
+    /// - macOS: `~/Library/Preferences/{app_name}`
+    /// - Linux: `~/.config/{app_name}`
+    /// - Windows: `%APPDATA%\{app_name}`
+    ///
+    /// # Errors
+    ///
+    /// Returns `MigrationError::HomeDirNotFound` if the home directory cannot be determined.
+    /// Returns `MigrationError::IoError` if directory creation fails.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let pref_dir = pref.pref_dir()?;
+    /// // On macOS: ~/Library/Preferences/com.example.myapp
+    /// ```
+    pub fn pref_dir(&self) -> Result<PathBuf, MigrationError> {
+        let dir = self.resolve_pref_dir()?;
+        self.ensure_dir_exists(&dir)?;
+        Ok(dir)
+    }
+
+    /// Get a preference file path.
+    ///
+    /// This is a convenience method that joins the filename to the preference directory.
+    /// Creates the parent directory if it doesn't exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `filename` - The preference file name (e.g., "settings.plist", "config.json")
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let pref_file = pref.pref_file("settings.plist")?;
+    /// // On macOS: ~/Library/Preferences/com.example.myapp/settings.plist
+    /// ```
+    pub fn pref_file(&self, filename: &str) -> Result<PathBuf, MigrationError> {
+        Ok(self.pref_dir()?.join(filename))
+    }
+
+    /// Resolve the preference directory path based on OS.
+    fn resolve_pref_dir(&self) -> Result<PathBuf, MigrationError> {
+        #[cfg(target_os = "macos")]
+        {
+            // macOS: ~/Library/Preferences
+            let home = dirs::home_dir().ok_or(MigrationError::HomeDirNotFound)?;
+            Ok(home.join("Library/Preferences").join(&self.app_name))
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            // Linux/Windows: Use OS-standard config directory
+            let base = dirs::config_dir().ok_or(MigrationError::HomeDirNotFound)?;
+            Ok(base.join(&self.app_name))
+        }
+    }
+
+    /// Ensure a directory exists, creating it if necessary.
+    fn ensure_dir_exists(&self, path: &PathBuf) -> Result<(), MigrationError> {
+        if !path.exists() {
+            std::fs::create_dir_all(path).map_err(|e| MigrationError::IoError {
+                operation: IoOperationKind::CreateDir,
+                path: path.display().to_string(),
+                context: None,
+                error: e.to_string(),
+            })?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,5 +512,94 @@ mod tests {
 
         assert_eq!(dir1, dir2);
         assert_eq!(dir2, dir3);
+    }
+
+    // PrefPath tests
+    #[test]
+    fn test_pref_path_new() {
+        let pref = PrefPath::new("com.example.testapp");
+        assert_eq!(pref.app_name, "com.example.testapp");
+    }
+
+    #[test]
+    fn test_pref_path_resolve_dir() {
+        let pref = PrefPath::new("com.example.testapp");
+        let pref_dir = pref.resolve_pref_dir().unwrap();
+
+        // Should end with app name
+        assert!(pref_dir.ends_with("com.example.testapp"));
+
+        // Platform-specific checks
+        #[cfg(target_os = "macos")]
+        {
+            let home = dirs::home_dir().unwrap();
+            assert_eq!(
+                pref_dir,
+                home.join("Library/Preferences/com.example.testapp")
+            );
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let home = dirs::home_dir().unwrap();
+            assert_eq!(pref_dir, home.join(".config/com.example.testapp"));
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, should use APPDATA
+            assert!(pref_dir.to_string_lossy().contains("AppData"));
+        }
+    }
+
+    #[test]
+    fn test_pref_file() {
+        let pref = PrefPath::new("com.example.testapp");
+        let pref_file = pref.pref_file("settings.plist").unwrap();
+
+        // Should end with the filename
+        assert!(pref_file.ends_with("settings.plist"));
+
+        // Should contain app name
+        assert!(pref_file.to_string_lossy().contains("com.example.testapp"));
+
+        #[cfg(target_os = "macos")]
+        {
+            let home = dirs::home_dir().unwrap();
+            assert_eq!(
+                pref_file,
+                home.join("Library/Preferences/com.example.testapp/settings.plist")
+            );
+        }
+    }
+
+    #[test]
+    fn test_pref_dir_creates_directory() {
+        // This test would require mocking or a temp directory
+        // For now, we just verify it doesn't panic with the real home dir
+        let pref = PrefPath::new("test_version_migrate_pref");
+        let pref_dir = pref.pref_dir().unwrap();
+
+        // Clean up
+        if pref_dir.exists() {
+            let _ = std::fs::remove_dir_all(&pref_dir);
+        }
+    }
+
+    #[test]
+    fn test_pref_path_multiple_calls_idempotent() {
+        let pref = PrefPath::new("test_version_migrate_pref2");
+
+        let dir1 = pref.pref_dir().unwrap();
+        let dir2 = pref.pref_dir().unwrap();
+        let dir3 = pref.pref_dir().unwrap();
+
+        assert_eq!(dir1, dir2);
+        assert_eq!(dir2, dir3);
+
+        // Clean up
+        if dir1.exists() {
+            let _ = std::fs::remove_dir_all(&dir1);
+        }
     }
 }

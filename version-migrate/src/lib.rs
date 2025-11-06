@@ -159,7 +159,7 @@ pub use dir_storage::{DirStorage, DirStorageStrategy, FilenameEncoding};
 pub use dir_storage::AsyncDirStorage;
 
 // Re-export paths types
-pub use paths::{AppPaths, PathStrategy};
+pub use paths::{AppPaths, PathStrategy, PrefPath};
 
 // Re-export async-trait for user convenience
 #[cfg(feature = "async")]
