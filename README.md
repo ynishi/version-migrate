@@ -744,7 +744,10 @@ println!("Config stored at: {}", file_path.display());
 - **Atomicity**: Temporary file + atomic rename ensures all-or-nothing updates
 - **Retry Logic**: Configurable retry count for rename operations (default: 3)
 - **Format Support**: TOML or JSON with automatic conversion
-- **Load Strategies**: Create empty config if missing, or return error
+- **Load Strategies**:
+  - `CreateIfMissing`: Create empty config in memory if file doesn't exist
+  - `SaveIfMissing`: Create empty config and save it to disk if file doesn't exist
+  - `ErrorIfMissing`: Return error if file doesn't exist
 - **Cleanup**: Automatic cleanup of temporary files (best effort)
 - **Path Access**: `path()` method returns the storage file path for debugging or logging
 

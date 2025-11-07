@@ -40,6 +40,8 @@ impl Default for AtomicWriteConfig {
 pub enum LoadBehavior {
     /// Create an empty ConfigMigrator if file is missing
     CreateIfMissing,
+    /// Create an empty ConfigMigrator and save it to file if missing
+    SaveIfMissing,
     /// Return an error if file is missing
     ErrorIfMissing,
 }
@@ -142,6 +144,9 @@ impl FileStorage {
         migrator: Migrator,
         strategy: FileStorageStrategy,
     ) -> Result<Self, MigrationError> {
+        // Track if file was missing for SaveIfMissing behavior
+        let file_was_missing = !path.exists();
+
         // Load file content if it exists
         let json_string = if path.exists() {
             let content = fs::read_to_string(&path).map_err(|e| MigrationError::IoError {
@@ -170,7 +175,7 @@ impl FileStorage {
         } else {
             // File doesn't exist
             match strategy.load_behavior {
-                LoadBehavior::CreateIfMissing => "{}".to_string(),
+                LoadBehavior::CreateIfMissing | LoadBehavior::SaveIfMissing => "{}".to_string(),
                 LoadBehavior::ErrorIfMissing => {
                     return Err(MigrationError::IoError {
                         operation: IoOperationKind::Read,
@@ -185,11 +190,18 @@ impl FileStorage {
         // Create ConfigMigrator with loaded/empty data
         let config = ConfigMigrator::from(&json_string, migrator)?;
 
-        Ok(Self {
+        let storage = Self {
             path,
             config,
             strategy,
-        })
+        };
+
+        // If file was missing and SaveIfMissing is set, save the empty config
+        if file_was_missing && storage.strategy.load_behavior == LoadBehavior::SaveIfMissing {
+            storage.save()?;
+        }
+
+        Ok(storage)
     }
 
     /// Save current state to file atomically.
@@ -631,6 +643,28 @@ mod tests {
 
         assert!(result.is_err()); // Should error when file doesn't exist
         assert!(matches!(result, Err(MigrationError::IoError { .. })));
+    }
+
+    #[test]
+    fn test_load_behavior_save_if_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("save_if_missing.toml");
+        let migrator = setup_migrator();
+        let strategy = FileStorageStrategy::new().with_load_behavior(LoadBehavior::SaveIfMissing);
+
+        // File should not exist initially
+        assert!(!file_path.exists());
+
+        let result = FileStorage::new(file_path.clone(), migrator, strategy.clone());
+
+        // Should succeed and create the file
+        assert!(result.is_ok());
+        assert!(file_path.exists());
+
+        // Verify we can read the file back
+        let _storage = result.unwrap();
+        let reloaded = FileStorage::new(file_path.clone(), setup_migrator(), strategy);
+        assert!(reloaded.is_ok());
     }
 
     #[test]
