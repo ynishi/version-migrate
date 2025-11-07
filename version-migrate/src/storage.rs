@@ -55,6 +55,8 @@ pub struct FileStorageStrategy {
     pub atomic_write: AtomicWriteConfig,
     /// Behavior when file doesn't exist
     pub load_behavior: LoadBehavior,
+    /// Default value to use when SaveIfMissing is set (as JSON Value)
+    pub default_value: Option<JsonValue>,
 }
 
 impl Default for FileStorageStrategy {
@@ -63,6 +65,7 @@ impl Default for FileStorageStrategy {
             format: FormatStrategy::Toml,
             atomic_write: AtomicWriteConfig::default(),
             load_behavior: LoadBehavior::CreateIfMissing,
+            default_value: None,
         }
     }
 }
@@ -94,6 +97,27 @@ impl FileStorageStrategy {
     /// Set the load behavior.
     pub fn with_load_behavior(mut self, behavior: LoadBehavior) -> Self {
         self.load_behavior = behavior;
+        self
+    }
+
+    /// Set the default value to use when SaveIfMissing is set.
+    ///
+    /// This value will be used as the initial content when a file doesn't exist
+    /// and `LoadBehavior::SaveIfMissing` is configured.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use serde_json::json;
+    ///
+    /// let strategy = FileStorageStrategy::new()
+    ///     .with_load_behavior(LoadBehavior::SaveIfMissing)
+    ///     .with_default_value(json!({
+    ///         "test": [{"name": "default", "count": 0}]
+    ///     }));
+    /// ```
+    pub fn with_default_value(mut self, value: JsonValue) -> Self {
+        self.default_value = Some(value);
         self
     }
 }
@@ -175,7 +199,15 @@ impl FileStorage {
         } else {
             // File doesn't exist
             match strategy.load_behavior {
-                LoadBehavior::CreateIfMissing | LoadBehavior::SaveIfMissing => "{}".to_string(),
+                LoadBehavior::CreateIfMissing | LoadBehavior::SaveIfMissing => {
+                    // Use default_value if provided, otherwise use empty JSON
+                    if let Some(ref default_value) = strategy.default_value {
+                        serde_json::to_string(default_value)
+                            .map_err(|e| MigrationError::SerializationError(e.to_string()))?
+                    } else {
+                        "{}".to_string()
+                    }
+                }
                 LoadBehavior::ErrorIfMissing => {
                     return Err(MigrationError::IoError {
                         operation: IoOperationKind::Read,
@@ -665,6 +697,77 @@ mod tests {
         let _storage = result.unwrap();
         let reloaded = FileStorage::new(file_path.clone(), setup_migrator(), strategy);
         assert!(reloaded.is_ok());
+    }
+
+    #[test]
+    fn test_save_if_missing_with_default_value() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("default_value.toml");
+        let migrator = setup_migrator();
+
+        // Create default value with version info (using the latest version 2.0.0)
+        let default_value = serde_json::json!({
+            "test": [
+                {
+                    "version": "2.0.0",
+                    "name": "default_user",
+                    "count": 99
+                }
+            ]
+        });
+
+        let strategy = FileStorageStrategy::new()
+            .with_load_behavior(LoadBehavior::SaveIfMissing)
+            .with_default_value(default_value);
+
+        // File should not exist initially
+        assert!(!file_path.exists());
+
+        let storage = FileStorage::new(file_path.clone(), migrator, strategy.clone()).unwrap();
+
+        // File should have been created
+        assert!(file_path.exists());
+
+        // Verify the default value was saved
+        let loaded: Vec<TestEntity> = storage.query("test").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "default_user");
+        assert_eq!(loaded[0].count, 99);
+
+        // Load again and verify persistence
+        let reloaded = FileStorage::new(file_path.clone(), setup_migrator(), strategy).unwrap();
+        let reloaded_entities: Vec<TestEntity> = reloaded.query("test").unwrap();
+        assert_eq!(reloaded_entities.len(), 1);
+        assert_eq!(reloaded_entities[0].name, "default_user");
+        assert_eq!(reloaded_entities[0].count, 99);
+    }
+
+    #[test]
+    fn test_create_if_missing_with_default_value() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("create_default.toml");
+        let migrator = setup_migrator();
+
+        let default_value = serde_json::json!({
+            "test": [{
+                "version": "2.0.0",
+                "name": "created",
+                "count": 42
+            }]
+        });
+
+        let strategy = FileStorageStrategy::new()
+            .with_load_behavior(LoadBehavior::CreateIfMissing)
+            .with_default_value(default_value);
+
+        // CreateIfMissing should not save the file automatically
+        let storage = FileStorage::new(file_path.clone(), migrator, strategy).unwrap();
+
+        // Query should work with the default value in memory
+        let loaded: Vec<TestEntity> = storage.query("test").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "created");
+        assert_eq!(loaded[0].count, 42);
     }
 
     #[test]
