@@ -17,7 +17,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 semver = { workspace = true }
 async-trait = { workspace = true, optional = true }
-version-migrate-macro = { version = "0.15.0", path = "../version-migrate-macro" }
+version-migrate-macro = { version = "0.16.0", path = "../version-migrate-macro" }
 toml = "0.8"
 fs2 = "0.4"
 dirs = "5.0"
