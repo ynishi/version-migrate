@@ -9,12 +9,14 @@ use std::path::PathBuf;
 ///
 /// Determines how configuration and data directories are resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PathStrategy {
     /// Use OS-standard directories (default).
     ///
     /// - Linux:   `~/.config/` (XDG_CONFIG_HOME)
     /// - macOS:   `~/Library/Application Support/`
     /// - Windows: `%APPDATA%`
+    #[default]
     System,
 
     /// Force XDG Base Directory specification on all platforms.
@@ -32,11 +34,6 @@ pub enum PathStrategy {
     CustomBase(PathBuf),
 }
 
-impl Default for PathStrategy {
-    fn default() -> Self {
-        Self::System
-    }
-}
 
 /// Application path manager with configurable resolution strategies.
 ///

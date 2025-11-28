@@ -330,6 +330,167 @@ impl Migrator {
         self.load_from(entity, data)
     }
 
+    /// Loads and migrates data from any serde-compatible format with fallback for legacy data.
+    ///
+    /// This method attempts to load data as versioned first. If version field is missing,
+    /// it treats the data as version 0 (the first version in the migration chain).
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The entity name used when registering the migration path
+    /// * `data` - Data that may or may not have version information
+    ///
+    /// # Returns
+    ///
+    /// The migrated data as the domain model type
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The data cannot be converted to the internal format
+    /// - The entity is not registered
+    /// - A migration step fails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Works with versioned data
+    /// let versioned_json = r#"{"version":"1.0.0","data":{"id":"task-1","title":"My Task"}}"#;
+    /// let domain: TaskEntity = migrator.load_with_fallback("task", versioned_json)?;
+    ///
+    /// // Works with legacy data (no version field) - treats as V1
+    /// let legacy_json = r#"{"id":"task-1","title":"My Task"}"#;
+    /// let domain: TaskEntity = migrator.load_with_fallback("task", legacy_json)?;
+    /// ```
+    pub fn load_from_with_fallback<D, T>(&self, entity: &str, data: T) -> Result<D, MigrationError>
+    where
+        D: DeserializeOwned,
+        T: Serialize,
+    {
+        // Convert the input data to serde_json::Value for internal processing
+        let value = serde_json::to_value(data).map_err(|e| {
+            MigrationError::DeserializationError(format!(
+                "Failed to convert input data to internal format: {}",
+                e
+            ))
+        })?;
+
+        // Get the migration path for this entity
+        let path = self
+            .paths
+            .get(entity)
+            .ok_or_else(|| MigrationError::EntityNotFound(entity.to_string()))?;
+
+        let version_key = &path.version_key;
+        let data_key = &path.data_key;
+
+        // Try to extract version and data using custom keys
+        let (current_version, current_data) = if let Some(obj) = value.as_object() {
+            if let Some(version_value) = obj.get(version_key) {
+                if let Some(version_str) = version_value.as_str() {
+                    // Versioned data format
+                    let data = obj
+                        .get(data_key)
+                        .ok_or_else(|| {
+                            MigrationError::DeserializationError(format!(
+                                "Missing '{}' field",
+                                data_key
+                            ))
+                        })?
+                        .clone();
+                    (version_str.to_string(), data)
+                } else {
+                    // Version field exists but is not a string - fallback to first version
+                    if path.versions.is_empty() {
+                        return Err(MigrationError::DeserializationError(
+                            "No migration versions defined for fallback".to_string(),
+                        ));
+                    }
+                    (path.versions[0].clone(), value)
+                }
+            } else {
+                // No version field - fallback to first version
+                if path.versions.is_empty() {
+                    return Err(MigrationError::DeserializationError(
+                        "No migration versions defined for fallback".to_string(),
+                    ));
+                }
+                (path.versions[0].clone(), value)
+            }
+        } else {
+            return Err(MigrationError::DeserializationError(
+                "Expected object format for versioned data".to_string(),
+            ));
+        };
+
+        let mut current_version = current_version;
+        let mut current_data = current_data;
+
+        // Apply migration steps until we reach a version with no further steps
+        while let Some(migrate_fn) = path.steps.get(&current_version) {
+            // Migration function returns raw value, no wrapping
+            current_data = migrate_fn(current_data.clone())?;
+
+            // Update version to the next step
+            // Find the next version in the path
+            match path.versions.iter().position(|v| v == &current_version) {
+                Some(idx) if idx + 1 < path.versions.len() => {
+                    current_version = path.versions[idx + 1].clone();
+                }
+                _ => break,
+            }
+        }
+
+        // Finalize into domain model
+        let domain_value = (path.finalize)(current_data)?;
+
+        serde_json::from_value(domain_value).map_err(|e| {
+            MigrationError::DeserializationError(format!("Failed to convert to domain: {}", e))
+        })
+    }
+
+    /// Loads and migrates data from a JSON string with fallback for legacy data.
+    ///
+    /// This is a convenience method for `load_from_with_fallback` that accepts JSON strings.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The entity name used when registering the migration path
+    /// * `json` - A JSON string that may or may not contain version information
+    ///
+    /// # Returns
+    ///
+    /// The migrated data as the domain model type
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The JSON cannot be parsed
+    /// - The entity is not registered
+    /// - A migration step fails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Works with versioned data
+    /// let versioned_json = r#"{"version":"1.0.0","data":{"id":"task-1","title":"My Task"}}"#;
+    /// let domain: TaskEntity = migrator.load_with_fallback("task", versioned_json)?;
+    ///
+    /// // Works with legacy data (no version field) - treats as V1
+    /// let legacy_json = r#"{"id":"task-1","title":"My Task"}"#;
+    /// let domain: TaskEntity = migrator.load_with_fallback("task", legacy_json)?;
+    /// ```
+    pub fn load_with_fallback<D: DeserializeOwned>(
+        &self,
+        entity: &str,
+        json: &str,
+    ) -> Result<D, MigrationError> {
+        let data: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+            MigrationError::DeserializationError(format!("Failed to parse JSON: {}", e))
+        })?;
+        self.load_from_with_fallback(entity, data)
+    }
+
     /// Loads and migrates data from a flat format JSON string.
     ///
     /// This is a convenience method for loading from flat format JSON where the version
@@ -2453,5 +2614,163 @@ mod tests {
         assert!(json.contains("latest2"));
         assert!(json.contains("\"count\":10"));
         assert!(json.contains("\"count\":20"));
+    }
+
+    #[test]
+    fn test_load_with_fallback_versioned_data() {
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Test with properly versioned data
+        let versioned_json = r#"{"version":"1.0.0","data":{"value":"versioned_test"}}"#;
+        let result: Domain = migrator.load_with_fallback("test", versioned_json).unwrap();
+
+        assert_eq!(result.value, "versioned_test");
+        assert_eq!(result.count, 0); // Default from V1->V2 migration
+        assert!(result.enabled); // Default from V2->V3 migration
+    }
+
+    #[test]
+    fn test_load_with_fallback_legacy_data() {
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Test with legacy data (no version field) - should treat as V1
+        let legacy_json = r#"{"value":"legacy_test"}"#;
+        let result: Domain = migrator.load_with_fallback("test", legacy_json).unwrap();
+
+        assert_eq!(result.value, "legacy_test");
+        assert_eq!(result.count, 0); // Default from V1->V2 migration
+        assert!(result.enabled); // Default from V2->V3 migration
+    }
+
+    #[test]
+    fn test_load_with_fallback_mixed_formats() {
+        let path = Migrator::define("test")
+            .from::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Test with legacy data that matches V2 format
+        let legacy_v2_json = r#"{"value":"legacy_v2","count":42}"#;
+        let result: Domain = migrator.load_with_fallback("test", legacy_v2_json).unwrap();
+
+        assert_eq!(result.value, "legacy_v2");
+        assert_eq!(result.count, 42);
+        assert!(result.enabled); // Default from V2->V3 migration
+
+        // Test with versioned data
+        let versioned_json = r#"{"version":"2.0.0","data":{"value":"versioned_v2","count":99}}"#;
+        let result2: Domain = migrator.load_with_fallback("test", versioned_json).unwrap();
+
+        assert_eq!(result2.value, "versioned_v2");
+        assert_eq!(result2.count, 99);
+        assert!(result2.enabled);
+    }
+
+    #[test]
+    fn test_load_from_with_fallback_toml_value() {
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Simulate loading from TOML or other format
+        let data = serde_json::json!({"value": "from_toml"});
+        let result: Domain = migrator.load_from_with_fallback("test", data).unwrap();
+
+        assert_eq!(result.value, "from_toml");
+        assert_eq!(result.count, 0);
+        assert!(result.enabled);
+    }
+
+    #[test]
+    fn test_load_with_fallback_no_migration_path() {
+        let migrator = Migrator::new();
+
+        let legacy_json = r#"{"value":"test"}"#;
+        let result: Result<Domain, MigrationError> =
+            migrator.load_with_fallback("unknown", legacy_json);
+
+        assert!(matches!(result, Err(MigrationError::EntityNotFound(_))));
+    }
+
+    #[test]
+    fn test_load_with_fallback_empty_migration_path() {
+        // Register entity with no migration steps (direct conversion)
+        let path = Migrator::define("test").from::<V3>().into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Legacy data should still work with direct conversion
+        let legacy_json = r#"{"value":"direct","count":10,"enabled":false}"#;
+        let result: Domain = migrator.load_with_fallback("test", legacy_json).unwrap();
+
+        assert_eq!(result.value, "direct");
+        assert_eq!(result.count, 10);
+        assert!(!result.enabled);
+    }
+
+    #[test]
+    fn test_load_with_fallback_invalid_json() {
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        let invalid_json = "{ invalid json }";
+        let result: Result<Domain, MigrationError> =
+            migrator.load_with_fallback("test", invalid_json);
+
+        assert!(matches!(
+            result,
+            Err(MigrationError::DeserializationError(_))
+        ));
+    }
+
+    #[test]
+    fn test_load_with_fallback_non_object_data() {
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Array instead of object
+        let array_json = r#"["not", "an", "object"]"#;
+        let result: Result<Domain, MigrationError> =
+            migrator.load_with_fallback("test", array_json);
+
+        assert!(matches!(
+            result,
+            Err(MigrationError::DeserializationError(_))
+        ));
     }
 }

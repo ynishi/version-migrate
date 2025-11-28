@@ -7,6 +7,7 @@
 //! - **Type-safe migrations**: Define migrations between versions using traits
 //! - **Validation**: Automatic validation of migration paths (circular path detection, version ordering)
 //! - **Multi-format support**: Load from JSON, TOML, YAML, or any serde-compatible format
+//! - **Legacy data support**: Automatic fallback for data without version information
 //! - **Vec support**: Migrate collections of versioned entities
 //! - **Hierarchical structures**: Support for nested versioned entities
 //! - **Async migrations**: Optional async support for I/O-heavy migrations
@@ -74,6 +75,22 @@
 //!
 //! // Load and migrate multiple entities
 //! let domains: Vec<TaskEntity> = migrator.load_vec("task", &json)?;
+//! ```
+//!
+//! ## Legacy Data Support
+//!
+//! Handle data that was created before versioning was introduced:
+//!
+//! ```ignore
+//! // Legacy data without version information
+//! let legacy_json = r#"{"id": "task-1", "title": "Legacy Task"}"#;
+//!
+//! // Automatically treats legacy data as the first version and migrates
+//! let domain: TaskEntity = migrator.load_with_fallback("task", legacy_json)?;
+//!
+//! // Also works with properly versioned data
+//! let versioned_json = r#"{"version":"1.0.0","data":{"id":"task-1","title":"My Task"}}"#;
+//! let domain: TaskEntity = migrator.load_with_fallback("task", versioned_json)?;
 //! ```
 //!
 //! ## Hierarchical Structures
