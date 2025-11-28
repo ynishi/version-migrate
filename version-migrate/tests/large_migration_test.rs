@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use version_migrate::{migrator, IntoDomain, MigratesTo, Migrator, Versioned};
+use version_migrate::{migrate_path, IntoDomain, MigratesTo, Migrator, Versioned};
 
 // Define test versions V1 through V10
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn test_vec_notation_6_versions() {
-        let path = migrator!("task", [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskEntity]);
+        let path = migrate_path!("task", [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskEntity]);
         let mut migrator = Migrator::new();
         migrator.register(path).unwrap();
 
@@ -559,7 +559,7 @@ mod tests {
 
     #[test]
     fn test_vec_notation_7_versions() {
-        let path = migrator!(
+        let path = migrate_path!(
             "task",
             [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6, TaskV7]
         );
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn test_vec_notation_8_versions() {
-        let path = migrator!(
+        let path = migrate_path!(
             "task",
             [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6, TaskV7, TaskV8]
         );
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn test_vec_notation_9_versions() {
-        let path = migrator!(
+        let path = migrate_path!(
             "task",
             [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6, TaskV7, TaskV8, TaskV9]
         );
@@ -616,7 +616,7 @@ mod tests {
 
     #[test]
     fn test_vec_notation_10_versions() {
-        let path = migrator!(
+        let path = migrate_path!(
             "task",
             [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6, TaskV7, TaskV8, TaskV9, TaskV10]
         );
@@ -638,7 +638,7 @@ mod tests {
     #[test]
     fn test_vec_notation_with_default_keys() {
         // Test that vec notation works with standard versioned types
-        let path = migrator!(
+        let path = migrate_path!(
             "task",
             [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6, TaskV7]
         );
@@ -660,7 +660,7 @@ mod tests {
 
     #[test]
     fn test_middle_version_migration() {
-        let path = migrator!(
+        let path = migrate_path!(
             "task",
             [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6, TaskV7, TaskV8]
         );
@@ -690,30 +690,30 @@ mod tests {
     #[test]
     fn test_compile_time_vec_syntax() {
         // These should all compile successfully
-        let _path1 = migrator!("two", [TaskV1, TaskV2]);
-        let _path2 = migrator!("three", [TaskV1, TaskV2, TaskV3]);
-        let _path3 = migrator!("four", [TaskV1, TaskV2, TaskV3, TaskV4]);
-        let _path4 = migrator!("five", [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5]);
-        let _path5 = migrator!("six", [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6]);
-        let _path6 = migrator!(
+        let _path1 = migrate_path!("two", [TaskV1, TaskV2]);
+        let _path2 = migrate_path!("three", [TaskV1, TaskV2, TaskV3]);
+        let _path3 = migrate_path!("four", [TaskV1, TaskV2, TaskV3, TaskV4]);
+        let _path4 = migrate_path!("five", [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5]);
+        let _path5 = migrate_path!("six", [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6]);
+        let _path6 = migrate_path!(
             "seven",
             [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6, TaskV7]
         );
-        let _path7 = migrator!(
+        let _path7 = migrate_path!(
             "eight",
             [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6, TaskV7, TaskV8]
         );
-        let _path8 = migrator!(
+        let _path8 = migrate_path!(
             "nine",
             [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6, TaskV7, TaskV8, TaskV9]
         );
-        let _path9 = migrator!(
+        let _path9 = migrate_path!(
             "ten",
             [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6, TaskV7, TaskV8, TaskV9, TaskV10]
         );
 
         // With custom keys
-        let _path_custom = migrator!(
+        let _path_custom = migrate_path!(
             "custom",
             [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6, TaskV7],
             version_key = "version",

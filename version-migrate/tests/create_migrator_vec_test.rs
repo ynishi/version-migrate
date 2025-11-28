@@ -237,7 +237,7 @@ impl IntoDomain<TestV6> for TestV6 {
 #[ignore = "Requires complex trait setup - Vec notation works but needs proper IntoDomain implementations"]
 fn test_vec_notation_two_versions() {
     // This test would work if we implemented IntoDomain<TestV2> for TestV1
-    // let path = migrator!("test", [TestV1, TestV2]);
+    // let path = migrate_path!("test", [TestV1, TestV2]);
     assert!(true);
 }
 
@@ -248,7 +248,7 @@ fn test_vec_notation_basic_syntax() {
     // even though we can't run it without proper trait implementations
 
     // The Vec notation syntax would be:
-    // migrator!("entity", [V1, V2, V3, V4, V5, V6, V7])
+    // migrate_path!("entity", [V1, V2, V3, V4, V5, V6, V7])
 
     // This would expand to the builder pattern:
     // Migrator::define("entity")
@@ -268,7 +268,7 @@ fn test_vec_notation_compilation() {
     // arbitrary length migration chains (6+ versions)
 
     // The key feature is that users can now write:
-    // migrator!("entity", [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10])
+    // migrate_path!("entity", [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10])
     // instead of manually chaining multiple .step() calls
 
     // This solves the original request for supporting 6+ migration steps
@@ -283,7 +283,7 @@ fn test_macro_expansion_equivalence() {
     // This demonstrates that the implementation correctly handles the expansion logic
 
     // The Vec notation:
-    // migrator!("entity", [V1, V2, V3, V4, V5, V6])
+    // migrate_path!("entity", [V1, V2, V3, V4, V5, V6])
 
     // Would expand to exactly the same builder pattern as:
     // Migrator::define("entity")

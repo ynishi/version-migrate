@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use version_migrate::{migrator, IntoDomain, MigratesTo, Migrator, Versioned};
+use version_migrate::{migrate_path, IntoDomain, MigratesTo, Migrator, Versioned};
 
 #[derive(Serialize, Deserialize, Versioned)]
 #[versioned(version = "1.0.0")]
@@ -87,7 +87,7 @@ impl IntoDomain<CustomV2> for CustomV1 {
 #[test]
 fn test_migrator_basic_syntax() {
     // Test basic two-version migration
-    let path = migrator!("task", [TaskV1_0_0, TaskV1_1_0]);
+    let path = migrate_path!("task", [TaskV1_0_0, TaskV1_1_0]);
 
     let mut migrator = Migrator::new();
     migrator.register(path).unwrap();
@@ -104,7 +104,7 @@ fn test_migrator_basic_syntax() {
 #[test]
 fn test_migrator_three_versions() {
     // Test three-version migration chain
-    let path = migrator!("task", [TaskV1_0_0, TaskV1_1_0, TaskV1_2_0]);
+    let path = migrate_path!("task", [TaskV1_0_0, TaskV1_1_0, TaskV1_2_0]);
 
     let mut migrator = Migrator::new();
     migrator.register(path).unwrap();
@@ -122,7 +122,7 @@ fn test_migrator_three_versions() {
 #[test]
 fn test_migrator_with_domain() {
     // Test migration to domain entity
-    let path = migrator!("task", [TaskV1_0_0, TaskV1_1_0, TaskV1_2_0]);
+    let path = migrate_path!("task", [TaskV1_0_0, TaskV1_1_0, TaskV1_2_0]);
 
     let mut migrator = Migrator::new();
     migrator.register(path).unwrap();
@@ -171,7 +171,7 @@ impl MigratesTo<CustomV2> for CustomV1 {
 #[test]
 fn test_migrator_custom_keys() {
     // Test with custom keys
-    let path = migrator!(
+    let path = migrate_path!(
         "custom",
         [CustomV1, CustomV2],
         version_key = "schema_version",
@@ -192,15 +192,15 @@ fn test_migrator_custom_keys() {
 #[test]
 fn test_migrator_compilation() {
     // This test ensures the macro patterns compile correctly with Vec notation
-    let _path1 = migrator!("task1", [TaskV1_0_0, TaskV1_1_0]);
-    let _path2 = migrator!("task2", [TaskV1_0_0, TaskV1_1_0, TaskV1_2_0]);
-    let _path3 = migrator!(
+    let _path1 = migrate_path!("task1", [TaskV1_0_0, TaskV1_1_0]);
+    let _path2 = migrate_path!("task2", [TaskV1_0_0, TaskV1_1_0, TaskV1_2_0]);
+    let _path3 = migrate_path!(
         "task3",
         [TaskV1_0_0, TaskV1_1_0],
         version_key = "v",
         data_key = "d"
     );
-    let _path4 = migrator!(
+    let _path4 = migrate_path!(
         "task4",
         [TaskV1_0_0, TaskV1_1_0, TaskV1_2_0],
         version_key = "v",
@@ -211,7 +211,7 @@ fn test_migrator_compilation() {
 #[test]
 fn test_macro_generates_correct_builder_pattern() {
     // Verify the macro generates the same result as manual builder pattern
-    let macro_path = migrator!("task", [TaskV1_0_0, TaskV1_1_0, TaskV1_2_0]);
+    let macro_path = migrate_path!("task", [TaskV1_0_0, TaskV1_1_0, TaskV1_2_0]);
 
     let manual_path = Migrator::define("task")
         .from::<TaskV1_0_0>()

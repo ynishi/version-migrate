@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use version_migrate::{migrator, IntoDomain, MigratesTo, Migrator, Versioned};
+use version_migrate::{migrate_path, IntoDomain, MigratesTo, Migrator, Versioned};
 
 // Simple test versions for Vec notation
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_vec_notation_2_versions() {
-        let path = migrator!("test", [V1, V2]);
+        let path = migrate_path!("test", [V1, V2]);
         let mut migrator = Migrator::new();
         migrator.register(path).unwrap();
 
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_vec_notation_6_versions() {
-        let path = migrator!("test", [V1, V2, V3, V4, V5, V6]);
+        let path = migrate_path!("test", [V1, V2, V3, V4, V5, V6]);
         let mut migrator = Migrator::new();
         migrator.register(path).unwrap();
 
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_vec_notation_7_versions() {
-        let path = migrator!("test", [V1, V2, V3, V4, V5, V6, V7]);
+        let path = migrate_path!("test", [V1, V2, V3, V4, V5, V6, V7]);
         let mut migrator = Migrator::new();
         migrator.register(path).unwrap();
 
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn test_vec_notation_8_versions() {
-        let path = migrator!("test", [V1, V2, V3, V4, V5, V6, V7, V8]);
+        let path = migrate_path!("test", [V1, V2, V3, V4, V5, V6, V7, V8]);
         let mut migrator = Migrator::new();
         migrator.register(path).unwrap();
 
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn test_vec_notation_9_versions() {
-        let path = migrator!("test", [V1, V2, V3, V4, V5, V6, V7, V8, V9]);
+        let path = migrate_path!("test", [V1, V2, V3, V4, V5, V6, V7, V8, V9]);
         let mut migrator = Migrator::new();
         migrator.register(path).unwrap();
 
@@ -465,7 +465,7 @@ mod tests {
 
     #[test]
     fn test_vec_notation_10_versions_to_domain() {
-        let path = migrator!("test", [V1, V2, V3, V4, V5, V6, V7, V8, V9, UserEntity]);
+        let path = migrate_path!("test", [V1, V2, V3, V4, V5, V6, V7, V8, V9, UserEntity]);
         let mut migrator = Migrator::new();
         migrator.register(path).unwrap();
 
@@ -482,7 +482,7 @@ mod tests {
     #[test]
     fn test_vec_notation_with_default_keys() {
         // Test vec notation with default version/data keys
-        let path = migrator!("test", [V1, V2, V3, V4, V5]);
+        let path = migrate_path!("test", [V1, V2, V3, V4, V5]);
         let mut migrator = Migrator::new();
         migrator.register(path).unwrap();
 
@@ -503,18 +503,18 @@ mod tests {
     #[test]
     fn test_compile_time_vec_syntax() {
         // These should all compile successfully
-        let _path1 = migrator!("two", [V1, V2]);
-        let _path2 = migrator!("three", [V1, V2, V3]);
-        let _path3 = migrator!("four", [V1, V2, V3, V4]);
-        let _path4 = migrator!("five", [V1, V2, V3, V4, V5]);
-        let _path5 = migrator!("six", [V1, V2, V3, V4, V5, V6]);
-        let _path6 = migrator!("seven", [V1, V2, V3, V4, V5, V6, V7]);
-        let _path7 = migrator!("eight", [V1, V2, V3, V4, V5, V6, V7, V8]);
-        let _path8 = migrator!("nine", [V1, V2, V3, V4, V5, V6, V7, V8, V9]);
-        let _path9 = migrator!("ten", [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10]);
+        let _path1 = migrate_path!("two", [V1, V2]);
+        let _path2 = migrate_path!("three", [V1, V2, V3]);
+        let _path3 = migrate_path!("four", [V1, V2, V3, V4]);
+        let _path4 = migrate_path!("five", [V1, V2, V3, V4, V5]);
+        let _path5 = migrate_path!("six", [V1, V2, V3, V4, V5, V6]);
+        let _path6 = migrate_path!("seven", [V1, V2, V3, V4, V5, V6, V7]);
+        let _path7 = migrate_path!("eight", [V1, V2, V3, V4, V5, V6, V7, V8]);
+        let _path8 = migrate_path!("nine", [V1, V2, V3, V4, V5, V6, V7, V8, V9]);
+        let _path9 = migrate_path!("ten", [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10]);
 
         // With custom keys
-        let _path_custom = migrator!(
+        let _path_custom = migrate_path!(
             "custom",
             [V1, V2, V3, V4, V5],
             version_key = "version",
@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_middle_version_start() {
-        let path = migrator!("test", [V1, V2, V3, V4, V5, V6]);
+        let path = migrate_path!("test", [V1, V2, V3, V4, V5, V6]);
         let mut migrator = Migrator::new();
         migrator.register(path).unwrap();
 

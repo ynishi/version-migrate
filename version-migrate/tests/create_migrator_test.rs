@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use version_migrate::{migrator, IntoDomain, MigratesTo, Migrator, Versioned};
+use version_migrate::{migrate_path, IntoDomain, MigratesTo, Migrator, Versioned};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct TaskV1 {
@@ -109,8 +109,8 @@ impl IntoDomain<TaskEntity> for TaskV3 {
 
 #[test]
 fn test_migrator_basic() {
-    // migrator!("task", [V1, TaskEntity]) - domain model as final target
-    let path = migrator!("task", [TaskV1, TaskEntity]);
+    // migrate_path!("task", [V1, TaskEntity]) - domain model as final target
+    let path = migrate_path!("task", [TaskV1, TaskEntity]);
 
     let mut migrator = Migrator::new();
     migrator.register(path).unwrap();
@@ -132,8 +132,8 @@ fn test_migrator_basic() {
 
 #[test]
 fn test_migrator_multi_step() {
-    // migrator!("task", [V1, V2, TaskEntity])
-    let path = migrator!("task", [TaskV1, TaskV2, TaskEntity]);
+    // migrate_path!("task", [V1, V2, TaskEntity])
+    let path = migrate_path!("task", [TaskV1, TaskV2, TaskEntity]);
 
     let mut migrator = Migrator::new();
     migrator.register(path).unwrap();
@@ -156,7 +156,7 @@ fn test_migrator_multi_step() {
 #[test]
 fn test_migrator_with_custom_keys() {
     // Test that the macro compiles with custom key syntax
-    let _path = migrator!(
+    let _path = migrate_path!(
         "task",
         [TaskV1, TaskEntity],
         version_key = "schema_version",
@@ -170,15 +170,15 @@ fn test_migrator_with_custom_keys() {
 #[test]
 fn test_migrator_syntax_compilation() {
     // This test just ensures all macro patterns compile correctly
-    let _path1 = migrator!("task1", [TaskV1, TaskEntity]);
-    let _path2 = migrator!("task2", [TaskV1, TaskV2, TaskEntity]);
-    let _path3 = migrator!(
+    let _path1 = migrate_path!("task1", [TaskV1, TaskEntity]);
+    let _path2 = migrate_path!("task2", [TaskV1, TaskV2, TaskEntity]);
+    let _path3 = migrate_path!(
         "task3",
         [TaskV1, TaskEntity],
         version_key = "v",
         data_key = "d"
     );
-    let _path4 = migrator!(
+    let _path4 = migrate_path!(
         "task4",
         [TaskV1, TaskV2, TaskEntity],
         version_key = "v",

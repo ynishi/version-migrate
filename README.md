@@ -46,7 +46,7 @@ serde_json = "1.0"
 ## Quick Start
 
 ```rust
-use version-migrate::{migrator, Versioned, MigratesTo, IntoDomain, Migrator};
+use version_migrate::{migrator, Versioned, MigratesTo, IntoDomain};
 use serde::{Serialize, Deserialize};
 
 // Version 1.0.0
@@ -97,11 +97,8 @@ impl IntoDomain<TaskEntity> for Task_V1_1_0 {
 }
 
 fn main() {
-    // Setup migration path using the migrator! macro
-    let task_path = migrator!("task", [Task_V1_0_0, Task_V1_1_0, TaskEntity]);
-
-    let mut migrator = Migrator::new();
-    migrator.register(task_path).unwrap();
+    // Create a ready-to-use migrator with registered paths
+    let migrator = migrator!("task" => [Task_V1_0_0, Task_V1_1_0, TaskEntity]).unwrap();
 
     // Save versioned data
     let old_task = Task_V1_0_0 {
@@ -123,25 +120,46 @@ fn main() {
 
 ### Simplified Macro Syntax
 
-The `migrator!` macro provides a concise way to define migration paths:
+The `migrator!` macro creates a ready-to-use `Migrator` with registered paths:
 
 ```rust
-// Basic syntax: entity name + version list
-let path = migrator!("task", [TaskV1, TaskV2, TaskV3, TaskEntity]);
+// Single entity - returns Result<Migrator, MigrationError>
+let migrator = migrator!("task" => [TaskV1, TaskV2, TaskV3, TaskEntity]).unwrap();
+
+// Multiple entities at once
+let migrator = migrator!(
+    "task" => [TaskV1, TaskV2, TaskEntity],
+    "user" => [UserV1, UserV2, UserEntity]
+).unwrap();
 
 // With custom keys for version/data fields
-let path = migrator!("task", [TaskV1, TaskV2], version_key = "v", data_key = "d");
+let migrator = migrator!(
+    "task" => [TaskV1, TaskV2], version_key = "v", data_key = "d"
+).unwrap();
 
-// Register the path
-let mut migrator = Migrator::new();
-migrator.register(path)?;
+// Ready to use immediately!
+let entity: TaskEntity = migrator.load("task", json)?;
 ```
 
 **Key points:**
-- **Macro role**: Defines the migration path (which versions and how they connect)
-- **Migrator role**: Handles actual save/load operations using the registered paths
-- **Arbitrary length**: Supports any number of versions (not limited to 5)
+- **Returns `Migrator`**: Creates and registers paths in one step
+- **Multiple entities**: Register several migration paths at once
 - **Type-safe**: Compile-time verification that all migration traits are implemented
+- **Arbitrary length**: Supports any number of versions
+
+**Alternative: Path-only macro**
+
+If you need just the migration path without creating a `Migrator`:
+
+```rust
+use version_migrate::migrate_path;
+
+// Returns MigrationPath (not Migrator)
+let path = migrate_path!("task", [TaskV1, TaskV2, TaskV3, TaskEntity]);
+
+let mut migrator = Migrator::new();
+migrator.register(path)?;
+```
 
 **Alternative: Builder Pattern**
 

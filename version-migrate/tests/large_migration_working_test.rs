@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use version_migrate::{migrator, IntoDomain, MigratesTo, Migrator, Versioned};
+use version_migrate::{migrate_path, IntoDomain, MigratesTo, Migrator, Versioned};
 
 // Test versions for demonstrating large-scale migration (8 versions)
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -265,7 +265,7 @@ impl IntoDomain<WorkingEntity> for WorkingV8 {
 #[test]
 fn test_vec_notation_eight_versions() {
     // This demonstrates Vec notation supporting 8 versions (well beyond the 6+ requirement)
-    let path = migrator!(
+    let path = migrate_path!(
         "working",
         [WorkingV1, WorkingV2, WorkingV3, WorkingV4, WorkingV5, WorkingV6, WorkingV7, WorkingV8]
     );
@@ -295,7 +295,7 @@ fn test_vec_notation_eight_versions() {
 #[ignore = "Custom keys feature needs debugging - this is a separate issue from Vec notation support"]
 fn test_vec_notation_with_custom_keys_eight_versions() {
     // TODO: Debug why custom keys aren't working with the new macro implementation
-    let path = migrator!(
+    let path = migrate_path!(
         "working_custom",
         [WorkingV1, WorkingV2, WorkingV3, WorkingV4, WorkingV5, WorkingV6, WorkingV7, WorkingV8],
         version_key = "schema_version",
@@ -321,13 +321,13 @@ fn test_vec_notation_with_custom_keys_eight_versions() {
 #[test]
 fn test_comparison_vec_notation_lengths() {
     // Vec notation with 5 versions
-    let five_path = migrator!(
+    let five_path = migrate_path!(
         "vec_five",
         [WorkingV1, WorkingV2, WorkingV3, WorkingV4, WorkingV5]
     );
 
     // Vec notation with 8 versions - demonstrating arbitrary length support
-    let eight_path = migrator!(
+    let eight_path = migrate_path!(
         "vec_eight",
         [WorkingV1, WorkingV2, WorkingV3, WorkingV4, WorkingV5, WorkingV6, WorkingV7, WorkingV8]
     );
@@ -376,7 +376,7 @@ fn test_macro_expansion_equivalence() {
         .into::<WorkingV8>();
 
     // Vec notation - should expand to exactly the same
-    let vec_path = migrator!(
+    let vec_path = migrate_path!(
         "vec",
         [WorkingV1, WorkingV2, WorkingV3, WorkingV4, WorkingV5, WorkingV6, WorkingV7, WorkingV8]
     );
@@ -406,13 +406,13 @@ fn test_syntax_variations() {
     // Test different syntactic variations work
 
     // Basic Vec notation
-    let _path1 = migrator!("basic", [WorkingV1, WorkingV2]);
+    let _path1 = migrate_path!("basic", [WorkingV1, WorkingV2]);
 
     // With trailing comma
-    let _path2 = migrator!("trailing", [WorkingV1, WorkingV2,]);
+    let _path2 = migrate_path!("trailing", [WorkingV1, WorkingV2,]);
 
     // With custom keys
-    let _path3 = migrator!(
+    let _path3 = migrate_path!(
         "custom",
         [WorkingV1, WorkingV2],
         version_key = "ver",
@@ -420,7 +420,7 @@ fn test_syntax_variations() {
     );
 
     // With trailing comma and custom keys
-    let _path4 = migrator!(
+    let _path4 = migrate_path!(
         "both",
         [WorkingV1, WorkingV2,],
         version_key = "ver",

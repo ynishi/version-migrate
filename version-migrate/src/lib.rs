@@ -160,17 +160,18 @@ pub use version_migrate_macro::VersionMigrate;
 /// Creates a migration path with simplified syntax.
 ///
 /// This macro provides a concise way to define migration paths between versioned types.
+/// Use this when you need just the path without creating a Migrator instance.
 ///
 /// # Syntax
 ///
 /// Basic usage:
 /// ```ignore
-/// migrator!("entity", [V1, V2, V3])
+/// migrate_path!("entity", [V1, V2, V3])
 /// ```
 ///
 /// With custom version/data keys:
 /// ```ignore
-/// migrator!("entity", [V1, V2, V3], version_key = "v", data_key = "d")
+/// migrate_path!("entity", [V1, V2, V3], version_key = "v", data_key = "d")
 /// ```
 ///
 /// # Arguments
@@ -183,19 +184,19 @@ pub use version_migrate_macro::VersionMigrate;
 /// # Examples
 ///
 /// ```ignore
-/// use version_migrate::{migrator, Migrator};
+/// use version_migrate::{migrate_path, Migrator};
 ///
 /// // Simple two-step migration
-/// let path = migrator!("task", [TaskV1, TaskV2]);
+/// let path = migrate_path!("task", [TaskV1, TaskV2]);
 ///
 /// // Multi-step migration
-/// let path = migrator!("task", [TaskV1, TaskV2, TaskV3]);
+/// let path = migrate_path!("task", [TaskV1, TaskV2, TaskV3]);
 ///
 /// // Many versions (arbitrary length supported)
-/// let path = migrator!("task", [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6]);
+/// let path = migrate_path!("task", [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6]);
 ///
 /// // With custom keys
-/// let path = migrator!("task", [TaskV1, TaskV2], version_key = "v", data_key = "d");
+/// let path = migrate_path!("task", [TaskV1, TaskV2], version_key = "v", data_key = "d");
 ///
 /// // Register with migrator
 /// let mut migrator = Migrator::new();
@@ -206,20 +207,20 @@ pub use version_migrate_macro::VersionMigrate;
 ///
 /// The macro expands to the equivalent builder pattern:
 /// ```ignore
-/// // migrator!("entity", [V1, V2])
+/// // migrate_path!("entity", [V1, V2])
 /// // expands to:
 /// Migrator::define("entity")
 ///     .from::<V1>()
 ///     .into::<V2>()
 /// ```
 #[macro_export]
-macro_rules! migrator {
-    // Basic: migrator!("entity", [V1, V2, V3, ...])
+macro_rules! migrate_path {
+    // Basic: migrate_path!("entity", [V1, V2, V3, ...])
     ($entity:expr, [$first:ty, $($rest:ty),+ $(,)?]) => {
         $crate::migrator_vec_helper!($first; $($rest),+; $entity)
     };
 
-    // With custom keys: migrator!("entity", [V1, V2, ...], version_key = "v", data_key = "d")
+    // With custom keys: migrate_path!("entity", [V1, V2, ...], version_key = "v", data_key = "d")
     ($entity:expr, [$first:ty, $($rest:ty),+ $(,)?], version_key = $version_key:expr, data_key = $data_key:expr) => {
         $crate::migrator_vec_helper_with_keys!($first; $($rest),+; $entity; $version_key; $data_key)
     };
@@ -296,6 +297,82 @@ macro_rules! migrator_vec_build_steps_with_keys {
             $builder.step::<$current>()
         })
     };
+}
+
+/// Creates a fully initialized `Migrator` with registered migration paths.
+///
+/// This macro creates a `Migrator` instance and registers one or more migration paths,
+/// returning a ready-to-use migrator. This is the recommended way to create a migrator
+/// as it's more concise than manually calling `Migrator::new()` and `register()` for each path.
+///
+/// # Syntax
+///
+/// Single path:
+/// ```ignore
+/// migrator!("entity" => [V1, V2, V3])
+/// ```
+///
+/// Multiple paths:
+/// ```ignore
+/// migrator!(
+///     "task" => [TaskV1, TaskV2, TaskV3],
+///     "user" => [UserV1, UserV2]
+/// )
+/// ```
+///
+/// With custom keys:
+/// ```ignore
+/// migrator!(
+///     "task" => [TaskV1, TaskV2], version_key = "v", data_key = "d"
+/// )
+/// ```
+///
+/// # Examples
+///
+/// ```ignore
+/// use version_migrate::migrator;
+///
+/// // Single entity migration
+/// let migrator = migrator!("task" => [TaskV1, TaskV2, TaskV3]).unwrap();
+///
+/// // Multiple entities
+/// let migrator = migrator!(
+///     "task" => [TaskV1, TaskV2],
+///     "user" => [UserV1, UserV2]
+/// ).unwrap();
+///
+/// // Now ready to use
+/// let domain: TaskEntity = migrator.load("task", json_str)?;
+/// ```
+///
+/// # Returns
+///
+/// Returns `Result<Migrator, MigrationError>`. The migrator is ready to use if `Ok`.
+#[macro_export]
+macro_rules! migrator {
+    // Single path without custom keys
+    ($entity:expr => [$first:ty, $($rest:ty),+ $(,)?]) => {{
+        let mut migrator = $crate::Migrator::new();
+        let path = $crate::migrate_path!($entity, [$first, $($rest),+]);
+        migrator.register(path).map(|_| migrator)
+    }};
+
+    // Single path with custom keys
+    ($entity:expr => [$first:ty, $($rest:ty),+ $(,)?], version_key = $version_key:expr, data_key = $data_key:expr) => {{
+        let mut migrator = $crate::Migrator::new();
+        let path = $crate::migrate_path!($entity, [$first, $($rest),+], version_key = $version_key, data_key = $data_key);
+        migrator.register(path).map(|_| migrator)
+    }};
+
+    // Multiple paths without custom keys
+    ($($entity:expr => [$first:ty, $($rest:ty),+ $(,)?]),+ $(,)?) => {{
+        let mut migrator = $crate::Migrator::new();
+        $(
+            let path = $crate::migrate_path!($entity, [$first, $($rest),+]);
+            migrator.register(path)?;
+        )+
+        Ok::<$crate::Migrator, $crate::MigrationError>(migrator)
+    }};
 }
 
 // Re-export error types
