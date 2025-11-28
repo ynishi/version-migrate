@@ -320,10 +320,19 @@ macro_rules! migrator_vec_build_steps_with_keys {
 /// )
 /// ```
 ///
-/// With custom keys:
+/// Single path with custom keys:
 /// ```ignore
 /// migrator!(
 ///     "task" => [TaskV1, TaskV2], version_key = "v", data_key = "d"
+/// )
+/// ```
+///
+/// Multiple paths with custom keys (requires `@keys` prefix):
+/// ```ignore
+/// migrator!(
+///     @keys version_key = "v", data_key = "d";
+///     "task" => [TaskV1, TaskV2],
+///     "user" => [UserV1, UserV2]
 /// )
 /// ```
 ///
@@ -341,6 +350,18 @@ macro_rules! migrator_vec_build_steps_with_keys {
 ///     "user" => [UserV1, UserV2]
 /// ).unwrap();
 ///
+/// // Single entity with custom keys
+/// let migrator = migrator!(
+///     "task" => [TaskV1, TaskV2], version_key = "v", data_key = "d"
+/// ).unwrap();
+///
+/// // Multiple entities with custom keys
+/// let migrator = migrator!(
+///     @keys version_key = "v", data_key = "d";
+///     "task" => [TaskV1, TaskV2],
+///     "user" => [UserV1, UserV2]
+/// ).unwrap();
+///
 /// // Now ready to use
 /// let domain: TaskEntity = migrator.load("task", json_str)?;
 /// ```
@@ -350,6 +371,23 @@ macro_rules! migrator_vec_build_steps_with_keys {
 /// Returns `Result<Migrator, MigrationError>`. The migrator is ready to use if `Ok`.
 #[macro_export]
 macro_rules! migrator {
+    // Single path with custom keys (most specific, must come first)
+    ($entity:expr => [$first:ty, $($rest:ty),+ $(,)?], version_key = $version_key:expr, data_key = $data_key:expr) => {{
+        let mut migrator = $crate::Migrator::new();
+        let path = $crate::migrate_path!($entity, [$first, $($rest),+], version_key = $version_key, data_key = $data_key);
+        migrator.register(path).map(|_| migrator)
+    }};
+
+    // Multiple paths with custom keys - use @keys prefix to disambiguate
+    (@keys version_key = $version_key:expr, data_key = $data_key:expr; $($entity:expr => [$first:ty, $($rest:ty),+ $(,)?]),+ $(,)?) => {{
+        let mut migrator = $crate::Migrator::new();
+        $(
+            let path = $crate::migrate_path!($entity, [$first, $($rest),+], version_key = $version_key, data_key = $data_key);
+            migrator.register(path)?;
+        )+
+        Ok::<$crate::Migrator, $crate::MigrationError>(migrator)
+    }};
+
     // Single path without custom keys
     ($entity:expr => [$first:ty, $($rest:ty),+ $(,)?]) => {{
         let mut migrator = $crate::Migrator::new();
@@ -357,14 +395,7 @@ macro_rules! migrator {
         migrator.register(path).map(|_| migrator)
     }};
 
-    // Single path with custom keys
-    ($entity:expr => [$first:ty, $($rest:ty),+ $(,)?], version_key = $version_key:expr, data_key = $data_key:expr) => {{
-        let mut migrator = $crate::Migrator::new();
-        let path = $crate::migrate_path!($entity, [$first, $($rest),+], version_key = $version_key, data_key = $data_key);
-        migrator.register(path).map(|_| migrator)
-    }};
-
-    // Multiple paths without custom keys
+    // Multiple paths without custom keys (must come last)
     ($($entity:expr => [$first:ty, $($rest:ty),+ $(,)?]),+ $(,)?) => {{
         let mut migrator = $crate::Migrator::new();
         $(

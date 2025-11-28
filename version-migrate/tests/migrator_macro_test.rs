@@ -172,4 +172,92 @@ mod tests {
         // Latest version should return correct version string
         assert_eq!(migrator.get_latest_version("task"), Some("1.2.0"));
     }
+
+    #[test]
+    fn test_migrator_single_entity_with_custom_keys() {
+        // Test single entity with custom keys
+        let migrator = migrator!(
+            "task" => [TaskV1, TaskV2, TaskV3, TaskEntity],
+            version_key = "v",
+            data_key = "d"
+        )
+        .unwrap();
+
+        // Use custom keys in JSON
+        let json = r#"{"v":"1.0.0","d":{"id":"789"}}"#;
+        let result: TaskEntity = migrator.load("task", json).unwrap();
+
+        assert_eq!(result.id, "789");
+        assert_eq!(result.title, "Untitled");
+        assert_eq!(result.description, None);
+    }
+
+    #[test]
+    fn test_migrator_multiple_entities_with_custom_keys() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Define another entity for testing
+        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+        struct UserV1 {
+            name: String,
+        }
+
+        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+        struct UserV2 {
+            name: String,
+            email: String,
+        }
+
+        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+        struct UserEntity {
+            name: String,
+            email: String,
+        }
+
+        impl Versioned for UserV1 {
+            const VERSION: &'static str = "1.0.0";
+        }
+
+        impl Versioned for UserV2 {
+            const VERSION: &'static str = "2.0.0";
+        }
+
+        impl MigratesTo<UserV2> for UserV1 {
+            fn migrate(self) -> UserV2 {
+                UserV2 {
+                    name: self.name,
+                    email: "unknown@example.com".to_string(),
+                }
+            }
+        }
+
+        impl IntoDomain<UserEntity> for UserV2 {
+            fn into_domain(self) -> UserEntity {
+                UserEntity {
+                    name: self.name,
+                    email: self.email,
+                }
+            }
+        }
+
+        // Register multiple entities at once with custom keys
+        // Note: @keys prefix is required to disambiguate from single entity syntax
+        let migrator = migrator!(
+            @keys version_key = "v", data_key = "d";
+            "task" => [TaskV1, TaskV2, TaskV3, TaskEntity],
+            "user" => [UserV1, UserV2, UserEntity]
+        )?;
+
+        // Test task migration with custom keys
+        let task_json = r#"{"v":"1.0.0","d":{"id":"123"}}"#;
+        let task: TaskEntity = migrator.load("task", task_json)?;
+        assert_eq!(task.id, "123");
+
+        // Test user migration with custom keys
+        let user_json = r#"{"v":"1.0.0","d":{"name":"Bob"}}"#;
+        let user: UserEntity = migrator.load("user", user_json)?;
+        assert_eq!(user.name, "Bob");
+        assert_eq!(user.email, "unknown@example.com");
+
+        Ok(())
+    }
 }

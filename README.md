@@ -132,9 +132,16 @@ let migrator = migrator!(
     "user" => [UserV1, UserV2, UserEntity]
 ).unwrap();
 
-// With custom keys for version/data fields
+// Single entity with custom keys for version/data fields
 let migrator = migrator!(
     "task" => [TaskV1, TaskV2], version_key = "v", data_key = "d"
+).unwrap();
+
+// Multiple entities with custom keys (requires @keys prefix)
+let migrator = migrator!(
+    @keys version_key = "v", data_key = "d";
+    "task" => [TaskV1, TaskV2],
+    "user" => [UserV1, UserV2]
 ).unwrap();
 
 // Ready to use immediately!
@@ -156,6 +163,14 @@ use version_migrate::migrate_path;
 
 // Returns MigrationPath (not Migrator)
 let path = migrate_path!("task", [TaskV1, TaskV2, TaskV3, TaskEntity]);
+
+// With custom keys
+let path = migrate_path!(
+    "task",
+    [TaskV1, TaskV2, TaskV3, TaskEntity],
+    version_key = "v",
+    data_key = "d"
+);
 
 let mut migrator = Migrator::new();
 migrator.register(path)?;
