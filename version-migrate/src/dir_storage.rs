@@ -51,8 +51,7 @@ pub use crate::storage::{AtomicWriteConfig, FormatStrategy};
 /// File naming encoding strategy for entity IDs.
 ///
 /// Determines how entity IDs are encoded into filesystem-safe filenames.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FilenameEncoding {
     /// Use ID directly as filename (safe characters only: alphanumeric, `-`, `_`)
     #[default]
@@ -62,7 +61,6 @@ pub enum FilenameEncoding {
     /// Base64-encode the ID (for maximum safety)
     Base64,
 }
-
 
 /// Strategy configuration for directory-based storage operations.
 #[derive(Debug, Clone)]

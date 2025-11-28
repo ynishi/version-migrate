@@ -8,8 +8,7 @@ use std::path::PathBuf;
 /// Path resolution strategy.
 ///
 /// Determines how configuration and data directories are resolved.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PathStrategy {
     /// Use OS-standard directories (default).
     ///
@@ -33,7 +32,6 @@ pub enum PathStrategy {
     /// All paths will be resolved relative to this base directory.
     CustomBase(PathBuf),
 }
-
 
 /// Application path manager with configurable resolution strategies.
 ///
