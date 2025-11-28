@@ -617,12 +617,7 @@ pub fn derive_version_migrate(input: TokenStream) -> TokenStream {
         if attr.path().is_ident("version_migrate") {
             if let Meta::List(meta_list) = &attr.meta {
                 let tokens = meta_list.tokens.to_string();
-                parse_version_migrate_attrs(
-                    &tokens,
-                    &mut entity_name,
-                    &mut latest_type,
-                    &mut save,
-                );
+                parse_version_migrate_attrs(&tokens, &mut entity_name, &mut latest_type, &mut save);
             }
         }
     }
