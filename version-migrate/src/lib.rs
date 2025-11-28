@@ -157,6 +157,161 @@ pub use version_migrate_macro::Queryable as DeriveQueryable;
 // Re-export VersionMigrate derive macro
 #[doc(inline)]
 pub use version_migrate_macro::VersionMigrate;
+/// Creates a migration path with simplified syntax.
+///
+/// This macro provides a concise way to define migration paths between versioned types.
+///
+/// # Syntax
+///
+/// Basic usage:
+/// ```ignore
+/// migrator!("entity", [V1, V2, V3])
+/// ```
+///
+/// With custom version/data keys:
+/// ```ignore
+/// migrator!("entity", [V1, V2, V3], version_key = "v", data_key = "d")
+/// ```
+///
+/// # Arguments
+///
+/// * `entity` - The entity name as a string literal (e.g., `"user"`, `"task"`)
+/// * `versions` - A list of version types in migration order (e.g., `[V1, V2, V3]`)
+/// * `version_key` - (Optional) Custom key for the version field (default: `"version"`)
+/// * `data_key` - (Optional) Custom key for the data field (default: `"data"`)
+///
+/// # Examples
+///
+/// ```ignore
+/// use version_migrate::{migrator, Migrator};
+///
+/// // Simple two-step migration
+/// let path = migrator!("task", [TaskV1, TaskV2]);
+///
+/// // Multi-step migration
+/// let path = migrator!("task", [TaskV1, TaskV2, TaskV3]);
+///
+/// // Many versions (arbitrary length supported)
+/// let path = migrator!("task", [TaskV1, TaskV2, TaskV3, TaskV4, TaskV5, TaskV6]);
+///
+/// // With custom keys
+/// let path = migrator!("task", [TaskV1, TaskV2], version_key = "v", data_key = "d");
+///
+/// // Register with migrator
+/// let mut migrator = Migrator::new();
+/// migrator.register(path).unwrap();
+/// ```
+///
+/// # Generated Code
+///
+/// The macro expands to the equivalent builder pattern:
+/// ```ignore
+/// // migrator!("entity", [V1, V2])
+/// // expands to:
+/// Migrator::define("entity")
+///     .from::<V1>()
+///     .into::<V2>()
+/// ```
+#[macro_export]
+macro_rules! migrator {
+    // Basic: migrator!("entity", [V1, V2, V3, ...])
+    ($entity:expr, [$first:ty, $($rest:ty),+ $(,)?]) => {
+        $crate::migrator_vec_helper!($first; $($rest),+; $entity)
+    };
+
+    // With custom keys: migrator!("entity", [V1, V2, ...], version_key = "v", data_key = "d")
+    ($entity:expr, [$first:ty, $($rest:ty),+ $(,)?], version_key = $version_key:expr, data_key = $data_key:expr) => {
+        $crate::migrator_vec_helper_with_keys!($first; $($rest),+; $entity; $version_key; $data_key)
+    };
+}
+
+/// Deprecated: Use `migrator!` instead.
+///
+/// This macro is kept for backward compatibility but will be removed in a future version.
+#[deprecated(since = "0.17.0", note = "Use `migrator!` instead")]
+#[macro_export]
+macro_rules! create_migrator {
+    ([$first:ty, $($rest:ty),+ $(,)?] as $entity:expr) => {
+        $crate::migrator!($entity, [$first, $($rest),+])
+    };
+
+    ([$first:ty, $($rest:ty),+ $(,)?] as $entity:expr, $version_key:expr, $data_key:expr) => {
+        $crate::migrator!($entity, [$first, $($rest),+], version_key = $version_key, data_key = $data_key)
+    };
+}
+
+/// Helper macro for Vec notation without custom keys
+#[doc(hidden)]
+#[macro_export]
+macro_rules! migrator_vec_helper {
+    // Base case: two versions left
+    ($first:ty; $last:ty; $entity:expr) => {
+        $crate::Migrator::define($entity)
+            .from::<$first>()
+            .into::<$last>()
+    };
+
+    // Recursive case: more than two versions
+    ($first:ty; $second:ty, $($rest:ty),+; $entity:expr) => {
+        $crate::migrator_vec_build_steps!($first; $($rest),+; $entity; {
+            $crate::Migrator::define($entity).from::<$first>().step::<$second>()
+        })
+    };
+}
+
+/// Helper for building all steps, then applying final .into()
+#[doc(hidden)]
+#[macro_export]
+macro_rules! migrator_vec_build_steps {
+    // Final case: last version, call .into()
+    ($first:ty; $last:ty; $entity:expr; { $builder:expr }) => {
+        $builder.into::<$last>()
+    };
+
+    // Recursive case: add .step() and continue
+    ($first:ty; $current:ty, $($rest:ty),+; $entity:expr; { $builder:expr }) => {
+        $crate::migrator_vec_build_steps!($first; $($rest),+; $entity; {
+            $builder.step::<$current>()
+        })
+    };
+}
+
+/// Helper macro for Vec notation with custom keys
+#[doc(hidden)]
+#[macro_export]
+macro_rules! migrator_vec_helper_with_keys {
+    // Base case: two versions left
+    ($first:ty; $last:ty; $entity:expr; $version_key:expr; $data_key:expr) => {
+        $crate::Migrator::define($entity)
+            .with_keys($version_key, $data_key)
+            .from::<$first>()
+            .into::<$last>()
+    };
+
+    // Recursive case: more than two versions
+    ($first:ty; $second:ty, $($rest:ty),+; $entity:expr; $version_key:expr; $data_key:expr) => {
+        $crate::migrator_vec_build_steps_with_keys!($first; $($rest),+; $entity; $version_key; $data_key; {
+            $crate::Migrator::define($entity).with_keys($version_key, $data_key).from::<$first>().step::<$second>()
+        })
+    };
+}
+
+/// Helper for building all steps with custom keys, then applying final .into()
+#[doc(hidden)]
+#[macro_export]
+macro_rules! migrator_vec_build_steps_with_keys {
+    // Final case: last version, call .into()
+    ($first:ty; $last:ty; $entity:expr; $version_key:expr; $data_key:expr; { $builder:expr }) => {
+        $builder.into::<$last>()
+    };
+
+    // Recursive case: add .step() and continue
+    ($first:ty; $current:ty, $($rest:ty),+; $entity:expr; $version_key:expr; $data_key:expr; { $builder:expr }) => {
+        $crate::migrator_vec_build_steps_with_keys!($first; $($rest),+; $entity; $version_key; $data_key; {
+            $builder.step::<$current>()
+        })
+    };
+}
 
 // Re-export error types
 pub use errors::{IoOperationKind, MigrationError};
