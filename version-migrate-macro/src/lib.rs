@@ -535,15 +535,19 @@ fn generate_deserialize_impl(
 ///
 /// - `#[version_migrate(entity = "name", latest = Type)]`: Specifies the entity name
 ///   and the latest versioned type (both required).
+/// - `#[version_migrate(..., save = true|false)]`: Controls whether to enable save functionality (default: false)
+///   When `save = false` (default), uses `into()` for read-only access.
+///   When `save = true`, uses `into_with_save()` to enable domain entity saving.
 ///
 /// # Requirements
 ///
 /// You must manually implement `FromDomain<YourEntity>` on the latest versioned type
 /// to define how to convert from the domain entity to the versioned format.
+/// When `save = true`, the `FromDomain` trait is required for the save functionality.
 ///
 /// # Examples
 ///
-/// Basic usage:
+/// Basic usage (read-only, default):
 /// ```ignore
 /// use version_migrate::{VersionMigrate, FromDomain, Versioned};
 /// use serde::{Serialize, Deserialize};
@@ -557,9 +561,21 @@ fn generate_deserialize_impl(
 ///     description: Option<String>,
 /// }
 ///
-/// // Domain entity
+/// // Domain entity (read-only, default)
 /// #[derive(Serialize, Deserialize, VersionMigrate)]
 /// #[version_migrate(entity = "task", latest = TaskV1_1_0)]
+/// struct TaskEntity {
+///     id: String,
+///     title: String,
+///     description: Option<String>,
+/// }
+/// ```
+///
+/// With save support:
+/// ```ignore
+/// // Domain entity with save support
+/// #[derive(Serialize, Deserialize, VersionMigrate)]
+/// #[version_migrate(entity = "task", latest = TaskV1_1_0, save = true)]
 /// struct TaskEntity {
 ///     id: String,
 ///     title: String,
@@ -595,12 +611,18 @@ pub fn derive_version_migrate(input: TokenStream) -> TokenStream {
     // Extract attributes
     let mut entity_name: Option<String> = None;
     let mut latest_type: Option<Type> = None;
+    let mut save = false; // Default to false (read-only)
 
     for attr in &input.attrs {
         if attr.path().is_ident("version_migrate") {
             if let Meta::List(meta_list) = &attr.meta {
                 let tokens = meta_list.tokens.to_string();
-                parse_version_migrate_attrs(&tokens, &mut entity_name, &mut latest_type);
+                parse_version_migrate_attrs(
+                    &tokens,
+                    &mut entity_name,
+                    &mut latest_type,
+                    &mut save,
+                );
             }
         }
     }
@@ -617,6 +639,7 @@ pub fn derive_version_migrate(input: TokenStream) -> TokenStream {
         impl #impl_generics version_migrate::LatestVersioned for #name #ty_generics #where_clause {
             type Latest = #latest_type;
             const ENTITY_NAME: &'static str = #entity_name;
+            const SAVE: bool = #save;
         }
     };
 
@@ -627,6 +650,7 @@ fn parse_version_migrate_attrs(
     tokens: &str,
     entity_name: &mut Option<String>,
     latest_type: &mut Option<Type>,
+    save: &mut bool,
 ) {
     // Split by commas but preserve type paths
     let parts: Vec<&str> = tokens.split(',').collect();
@@ -645,6 +669,8 @@ fn parse_version_migrate_attrs(
                     *latest_type = Some(ty);
                 }
             }
+        } else if let Some(val) = parse_attr_bool_value(part, "save") {
+            *save = val;
         }
     }
 }

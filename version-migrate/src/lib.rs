@@ -422,6 +422,11 @@ pub trait LatestVersioned: Sized {
     /// The entity name used for migration paths.
     const ENTITY_NAME: &'static str;
 
+    /// Whether this entity supports saving functionality.
+    /// When `false` (default), uses `into()` for read-only access.
+    /// When `true`, uses `into_with_save()` to enable domain entity saving.
+    const SAVE: bool = false;
+
     /// Converts this domain entity into its latest versioned format.
     fn to_latest(self) -> Self::Latest {
         Self::Latest::from_domain(self)
