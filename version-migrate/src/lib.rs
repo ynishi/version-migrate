@@ -299,6 +299,79 @@ macro_rules! migrator_vec_build_steps_with_keys {
     };
 }
 
+/// Helper macro for Vec notation with save support (without custom keys)
+#[doc(hidden)]
+#[macro_export]
+macro_rules! migrator_vec_helper_with_save {
+    // Base case: two versions left
+    ($first:ty; $last:ty; $entity:expr) => {
+        $crate::Migrator::define($entity)
+            .from::<$first>()
+            .into_with_save::<$last>()
+    };
+
+    // Recursive case: more than two versions
+    ($first:ty; $second:ty, $($rest:ty),+; $entity:expr) => {
+        $crate::migrator_vec_build_steps_with_save!($first; $($rest),+; $entity; {
+            $crate::Migrator::define($entity).from::<$first>().step::<$second>()
+        })
+    };
+}
+
+/// Helper for building all steps with save support, then applying final .into_with_save()
+#[doc(hidden)]
+#[macro_export]
+macro_rules! migrator_vec_build_steps_with_save {
+    // Final case: last version, call .into_with_save()
+    ($first:ty; $last:ty; $entity:expr; { $builder:expr }) => {
+        $builder.into_with_save::<$last>()
+    };
+
+    // Recursive case: add .step() and continue
+    ($first:ty; $current:ty, $($rest:ty),+; $entity:expr; { $builder:expr }) => {
+        $crate::migrator_vec_build_steps_with_save!($first; $($rest),+; $entity; {
+            $builder.step::<$current>()
+        })
+    };
+}
+
+/// Helper macro for Vec notation with custom keys and save support
+#[doc(hidden)]
+#[macro_export]
+macro_rules! migrator_vec_helper_with_keys_and_save {
+    // Base case: two versions left
+    ($first:ty; $last:ty; $entity:expr; $version_key:expr; $data_key:expr) => {
+        $crate::Migrator::define($entity)
+            .with_keys($version_key, $data_key)
+            .from::<$first>()
+            .into_with_save::<$last>()
+    };
+
+    // Recursive case: more than two versions
+    ($first:ty; $second:ty, $($rest:ty),+; $entity:expr; $version_key:expr; $data_key:expr) => {
+        $crate::migrator_vec_build_steps_with_keys_and_save!($first; $($rest),+; $entity; $version_key; $data_key; {
+            $crate::Migrator::define($entity).with_keys($version_key, $data_key).from::<$first>().step::<$second>()
+        })
+    };
+}
+
+/// Helper for building all steps with custom keys and save support, then applying final .into_with_save()
+#[doc(hidden)]
+#[macro_export]
+macro_rules! migrator_vec_build_steps_with_keys_and_save {
+    // Final case: last version, call .into_with_save()
+    ($first:ty; $last:ty; $entity:expr; $version_key:expr; $data_key:expr; { $builder:expr }) => {
+        $builder.into_with_save::<$last>()
+    };
+
+    // Recursive case: add .step() and continue
+    ($first:ty; $current:ty, $($rest:ty),+; $entity:expr; $version_key:expr; $data_key:expr; { $builder:expr }) => {
+        $crate::migrator_vec_build_steps_with_keys_and_save!($first; $($rest),+; $entity; $version_key; $data_key; {
+            $builder.step::<$current>()
+        })
+    };
+}
+
 /// Creates a fully initialized `Migrator` with registered migration paths.
 ///
 /// This macro creates a `Migrator` instance and registers one or more migration paths,
@@ -371,14 +444,31 @@ macro_rules! migrator_vec_build_steps_with_keys {
 /// Returns `Result<Migrator, MigrationError>`. The migrator is ready to use if `Ok`.
 #[macro_export]
 macro_rules! migrator {
-    // Single path with custom keys (most specific, must come first)
+    // Single path with custom keys and save support (most specific)
+    ($entity:expr => [$first:ty, $($rest:ty),+ $(,)?], version_key = $version_key:expr, data_key = $data_key:expr, save = true) => {{
+        let mut migrator = $crate::Migrator::new();
+        let path = $crate::migrator_vec_helper_with_keys_and_save!($first; $($rest),+; $entity; $version_key; $data_key);
+        migrator.register(path).map(|_| migrator)
+    }};
+
+    // Single path with custom keys (no save)
     ($entity:expr => [$first:ty, $($rest:ty),+ $(,)?], version_key = $version_key:expr, data_key = $data_key:expr) => {{
         let mut migrator = $crate::Migrator::new();
         let path = $crate::migrate_path!($entity, [$first, $($rest),+], version_key = $version_key, data_key = $data_key);
         migrator.register(path).map(|_| migrator)
     }};
 
-    // Multiple paths with custom keys - use @keys prefix to disambiguate
+    // Multiple paths with custom keys and save support
+    (@keys version_key = $version_key:expr, data_key = $data_key:expr, save = true; $($entity:expr => [$first:ty, $($rest:ty),+ $(,)?]),+ $(,)?) => {{
+        let mut migrator = $crate::Migrator::new();
+        $(
+            let path = $crate::migrator_vec_helper_with_keys_and_save!($first; $($rest),+; $entity; $version_key; $data_key);
+            migrator.register(path)?;
+        )+
+        Ok::<$crate::Migrator, $crate::MigrationError>(migrator)
+    }};
+
+    // Multiple paths with custom keys (no save)
     (@keys version_key = $version_key:expr, data_key = $data_key:expr; $($entity:expr => [$first:ty, $($rest:ty),+ $(,)?]),+ $(,)?) => {{
         let mut migrator = $crate::Migrator::new();
         $(
@@ -388,14 +478,31 @@ macro_rules! migrator {
         Ok::<$crate::Migrator, $crate::MigrationError>(migrator)
     }};
 
-    // Single path without custom keys
+    // Single path with save support (no custom keys)
+    ($entity:expr => [$first:ty, $($rest:ty),+ $(,)?], save = true) => {{
+        let mut migrator = $crate::Migrator::new();
+        let path = $crate::migrator_vec_helper_with_save!($first; $($rest),+; $entity);
+        migrator.register(path).map(|_| migrator)
+    }};
+
+    // Single path without custom keys (no save)
     ($entity:expr => [$first:ty, $($rest:ty),+ $(,)?]) => {{
         let mut migrator = $crate::Migrator::new();
         let path = $crate::migrate_path!($entity, [$first, $($rest),+]);
         migrator.register(path).map(|_| migrator)
     }};
 
-    // Multiple paths without custom keys (must come last)
+    // Multiple paths with save support (no custom keys)
+    (@save; $($entity:expr => [$first:ty, $($rest:ty),+ $(,)?]),+ $(,)?) => {{
+        let mut migrator = $crate::Migrator::new();
+        $(
+            let path = $crate::migrator_vec_helper_with_save!($first; $($rest),+; $entity);
+            migrator.register(path)?;
+        )+
+        Ok::<$crate::Migrator, $crate::MigrationError>(migrator)
+    }};
+
+    // Multiple paths without custom keys (no save, must come last)
     ($($entity:expr => [$first:ty, $($rest:ty),+ $(,)?]),+ $(,)?) => {{
         let mut migrator = $crate::Migrator::new();
         $(

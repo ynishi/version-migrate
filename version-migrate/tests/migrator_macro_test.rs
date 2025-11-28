@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use version_migrate::{migrator, IntoDomain, MigratesTo, Versioned};
+use version_migrate::{migrator, FromDomain, IntoDomain, MigratesTo, Versioned};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct TaskV1 {
@@ -65,6 +65,16 @@ impl IntoDomain<TaskEntity> for TaskV3 {
             id: self.id,
             title: self.title,
             description: self.description,
+        }
+    }
+}
+
+impl FromDomain<TaskEntity> for TaskV3 {
+    fn from_domain(entity: TaskEntity) -> Self {
+        TaskV3 {
+            id: entity.id,
+            title: entity.title,
+            description: entity.description,
         }
     }
 }
@@ -259,5 +269,125 @@ mod tests {
         assert_eq!(user.email, "unknown@example.com");
 
         Ok(())
+    }
+
+    #[test]
+    fn test_migrator_with_save_single_entity() {
+        let migrator =
+            migrator!("task" => [TaskV1, TaskV2, TaskV3, TaskEntity], save = true).unwrap();
+
+        // Test load
+        let json = r#"{"version":"1.0.0","data":{"id":"save-test"}}"#;
+        let entity: TaskEntity = migrator.load("task", json).unwrap();
+        assert_eq!(entity.id, "save-test");
+        assert_eq!(entity.title, "Untitled");
+
+        // Test save
+        let saved = migrator.save_domain("task", entity).unwrap();
+        assert!(saved.contains("\"version\":\"1.2.0\""));
+        assert!(saved.contains("\"id\":\"save-test\""));
+    }
+
+    #[test]
+    fn test_migrator_with_save_multiple_entities() -> Result<(), Box<dyn std::error::Error>> {
+        // Define UserV1, UserV2, UserEntity
+        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+        struct UserV1 {
+            name: String,
+        }
+
+        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+        struct UserV2 {
+            name: String,
+            email: String,
+        }
+
+        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+        struct UserEntity {
+            name: String,
+            email: String,
+        }
+
+        impl Versioned for UserV1 {
+            const VERSION: &'static str = "1.0.0";
+        }
+
+        impl Versioned for UserV2 {
+            const VERSION: &'static str = "2.0.0";
+        }
+
+        impl MigratesTo<UserV2> for UserV1 {
+            fn migrate(self) -> UserV2 {
+                UserV2 {
+                    name: self.name,
+                    email: "unknown@example.com".to_string(),
+                }
+            }
+        }
+
+        impl IntoDomain<UserEntity> for UserV2 {
+            fn into_domain(self) -> UserEntity {
+                UserEntity {
+                    name: self.name,
+                    email: self.email,
+                }
+            }
+        }
+
+        impl FromDomain<UserEntity> for UserV2 {
+            fn from_domain(entity: UserEntity) -> Self {
+                UserV2 {
+                    name: entity.name,
+                    email: entity.email,
+                }
+            }
+        }
+
+        let migrator = migrator!(
+            @save;
+            "task" => [TaskV1, TaskV2, TaskV3, TaskEntity],
+            "user" => [UserV1, UserV2, UserEntity]
+        )?;
+
+        // Test task save
+        let task_entity = TaskEntity {
+            id: "multi-save-task".to_string(),
+            title: "Test Task".to_string(),
+            description: Some("Description".to_string()),
+        };
+        let task_saved = migrator.save_domain("task", task_entity)?;
+        assert!(task_saved.contains("\"version\":\"1.2.0\""));
+
+        // Test user save
+        let user_entity = UserEntity {
+            name: "Alice".to_string(),
+            email: "alice@example.com".to_string(),
+        };
+        let user_saved = migrator.save_domain("user", user_entity)?;
+        assert!(user_saved.contains("\"version\":\"2.0.0\""));
+        assert!(user_saved.contains("\"name\":\"Alice\""));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_migrator_with_save_and_custom_keys() {
+        let migrator = migrator!(
+            "task" => [TaskV1, TaskV2, TaskV3, TaskEntity],
+            version_key = "v",
+            data_key = "d",
+            save = true
+        )
+        .unwrap();
+
+        // Test load with custom keys
+        let json = r#"{"v":"1.0.0","d":{"id":"custom-key-test"}}"#;
+        let entity: TaskEntity = migrator.load("task", json).unwrap();
+        assert_eq!(entity.id, "custom-key-test");
+
+        // Test save with custom keys
+        let saved = migrator.save_domain("task", entity).unwrap();
+        assert!(saved.contains("\"v\":\"1.2.0\""));
+        assert!(saved.contains("\"d\":{"));
     }
 }
