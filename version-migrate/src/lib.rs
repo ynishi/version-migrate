@@ -225,21 +225,6 @@ macro_rules! migrator {
     };
 }
 
-/// Deprecated: Use `migrator!` instead.
-///
-/// This macro is kept for backward compatibility but will be removed in a future version.
-#[deprecated(since = "0.17.0", note = "Use `migrator!` instead")]
-#[macro_export]
-macro_rules! create_migrator {
-    ([$first:ty, $($rest:ty),+ $(,)?] as $entity:expr) => {
-        $crate::migrator!($entity, [$first, $($rest),+])
-    };
-
-    ([$first:ty, $($rest:ty),+ $(,)?] as $entity:expr, $version_key:expr, $data_key:expr) => {
-        $crate::migrator!($entity, [$first, $($rest),+], version_key = $version_key, data_key = $data_key)
-    };
-}
-
 /// Helper macro for Vec notation without custom keys
 #[doc(hidden)]
 #[macro_export]
