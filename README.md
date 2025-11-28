@@ -46,7 +46,7 @@ serde_json = "1.0"
 ## Quick Start
 
 ```rust
-use version-migrate::{Versioned, MigratesTo, IntoDomain, Migrator};
+use version-migrate::{migrator, Versioned, MigratesTo, IntoDomain, Migrator};
 use serde::{Serialize, Deserialize};
 
 // Version 1.0.0
@@ -97,14 +97,11 @@ impl IntoDomain<TaskEntity> for Task_V1_1_0 {
 }
 
 fn main() {
-    // Setup migration path
-    let task_path = Migrator::define("task")
-        .from::<Task_V1_0_0>()
-        .step::<Task_V1_1_0>()
-        .into::<TaskEntity>();
+    // Setup migration path using the migrator! macro
+    let task_path = migrator!("task", [Task_V1_0_0, Task_V1_1_0, TaskEntity]);
 
     let mut migrator = Migrator::new();
-    migrator.register(task_path);
+    migrator.register(task_path).unwrap();
 
     // Save versioned data
     let old_task = Task_V1_0_0 {
@@ -124,7 +121,45 @@ fn main() {
 
 ## Key Features
 
+### Simplified Macro Syntax
+
+The `migrator!` macro provides a concise way to define migration paths:
+
+```rust
+// Basic syntax: entity name + version list
+let path = migrator!("task", [TaskV1, TaskV2, TaskV3, TaskEntity]);
+
+// With custom keys for version/data fields
+let path = migrator!("task", [TaskV1, TaskV2], version_key = "v", data_key = "d");
+
+// Register the path
+let mut migrator = Migrator::new();
+migrator.register(path)?;
+```
+
+**Key points:**
+- **Macro role**: Defines the migration path (which versions and how they connect)
+- **Migrator role**: Handles actual save/load operations using the registered paths
+- **Arbitrary length**: Supports any number of versions (not limited to 5)
+- **Type-safe**: Compile-time verification that all migration traits are implemented
+
+**Alternative: Builder Pattern**
+
+For more control, you can use the builder pattern instead:
+
+```rust
+let path = Migrator::define("task")
+    .from::<TaskV1>()
+    .step::<TaskV2>()
+    .step::<TaskV3>()
+    .into::<TaskEntity>();
+```
+
+Both approaches generate the same migration path. Use the macro for conciseness, or the builder for explicit control.
+
 ### Save and Load
+
+Once you've registered migration paths, use the `Migrator` instance for save/load operations:
 
 ```rust
 // Save versioned data to JSON
@@ -135,6 +170,20 @@ let json = migrator.save(task)?;
 // Load and automatically migrate to latest version
 let task: TaskEntity = migrator.load("task", &json)?;
 ```
+
+**Available save methods:**
+- `save(data)` - Save single entity (wrapped format)
+- `save_flat(data)` - Save single entity (flat format)
+- `save_vec(data)` - Save Vec of entities
+- `save_entity(entity)` - Save domain entity directly (requires `VersionMigrate` macro)
+- `save_domain(name, entity)` - Save by entity name (requires `into_with_save()`)
+
+**Available load methods:**
+- `load(name, json)` - Load and migrate from JSON
+- `load_from(name, value)` - Load from any serde value (TOML, YAML, etc.)
+- `load_flat(name, json)` - Load from flat format
+- `load_vec(name, json)` - Load Vec of entities
+- `load_with_fallback(name, json)` - Load with legacy data support
 
 ### Saving Domain Entities Directly
 
@@ -446,17 +495,23 @@ let old_json = r#"{"version":"1.0.0","data":{...}}"#;
 let latest: TaskEntity = migrator.load("task", old_json)?;
 ```
 
-### Type-Safe Builder Pattern
+### Type-Safe Migration Paths
 
-The builder pattern ensures migration paths are complete at compile time:
+Both the `migrator!` macro and builder pattern ensure migration paths are complete at compile time:
 
 ```rust
-Migrator::define("task")
+// Using the migrator! macro (recommended for simplicity)
+let path = migrator!("task", [V1, V2, V3, Domain]);
+
+// Using the builder pattern (for explicit control)
+let path = Migrator::define("task")
     .from::<V1>()      // Starting version
     .step::<V2>()      // Must implement MigratesTo<V2> for V1
     .step::<V3>()      // Must implement MigratesTo<V3> for V2
     .into::<Domain>(); // Must implement IntoDomain<Domain> for V3
 ```
+
+Both approaches require the same trait implementations and provide compile-time safety.
 
 ### Working with Collections (Vec)
 
