@@ -501,7 +501,9 @@ impl DirStorage {
                 "after {} retries",
                 self.strategy.atomic_write.retry_count
             )),
-            error: last_error.unwrap().to_string(),
+            error: last_error
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "unknown error after retries".to_string()),
         })
     }
 
@@ -1403,7 +1405,9 @@ mod async_impl {
                     "after {} retries (async)",
                     self.strategy.atomic_write.retry_count
                 )),
-                error: last_error.unwrap().to_string(),
+                error: last_error
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "unknown error after retries".to_string()),
             })
         }
 

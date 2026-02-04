@@ -532,7 +532,7 @@ pub use dir_storage::{DirStorage, DirStorageStrategy, FilenameEncoding};
 pub use dir_storage::AsyncDirStorage;
 
 // Re-export forward compatibility types
-pub use forward::{Forwardable, ForwardContext};
+pub use forward::{ForwardContext, Forwardable};
 
 // Re-export paths types
 pub use paths::{AppPaths, PathStrategy, PrefPath};

@@ -2214,9 +2214,15 @@ impl ConfigMigrator {
             )));
         }
 
-        let array = value.as_array().unwrap(); // Safe because we checked is_array()
-        self.migrator
-            .load_vec_flat_from(T::ENTITY_NAME, array.to_vec())
+        match value.as_array() {
+            Some(array) => self
+                .migrator
+                .load_vec_flat_from(T::ENTITY_NAME, array.to_vec()),
+            None => Err(MigrationError::DeserializationError(format!(
+                "Key '{}' is not an array",
+                key
+            ))),
+        }
     }
 
     /// Updates a specific key in the JSON object with new domain entities.
