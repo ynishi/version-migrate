@@ -3232,4 +3232,126 @@ mod tests {
         assert_eq!(result.count, 99);
         assert!(result.enabled);
     }
+
+    #[test]
+    fn test_load_from_with_fallback_version_not_string() {
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Version field is a number, not a string - should fallback to V1
+        let json_value: serde_json::Value = serde_json::json!({
+            "version": 100,
+            "value": "fallback_test"
+        });
+
+        let result: Domain = migrator
+            .load_from_with_fallback("test", json_value)
+            .unwrap();
+        assert_eq!(result.value, "fallback_test");
+        assert_eq!(result.count, 0); // Default from V1->V2 migration
+        assert!(result.enabled); // Default from V2->V3 migration
+    }
+
+    #[test]
+    fn test_load_from_with_fallback_missing_data_field() {
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Has version string but missing data field
+        let json_value: serde_json::Value = serde_json::json!({
+            "version": "1.0.0"
+        });
+
+        let result: Result<Domain, MigrationError> =
+            migrator.load_from_with_fallback("test", json_value);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MigrationError::DeserializationError(ref msg) if msg.contains("data")),
+            "Expected DeserializationError about missing data field, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_register_second_version_invalid_semver() {
+        // BadV2 has invalid semver format
+        #[derive(Serialize, Deserialize, Debug)]
+        struct BadV2 {
+            value: String,
+            count: u32,
+        }
+
+        impl Versioned for BadV2 {
+            const VERSION: &'static str = "not-a-version"; // Invalid semver
+        }
+
+        impl MigratesTo<BadV2> for V1 {
+            fn migrate(self) -> BadV2 {
+                BadV2 {
+                    value: self.value,
+                    count: 0,
+                }
+            }
+        }
+
+        impl IntoDomain<Domain> for BadV2 {
+            fn into_domain(self) -> Domain {
+                Domain {
+                    value: self.value,
+                    count: self.count,
+                    enabled: false,
+                }
+            }
+        }
+
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<BadV2>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        let result = migrator.register(path);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MigrationError::DeserializationError(ref msg) if msg.contains("not-a-version")),
+            "Expected error about invalid semver 'not-a-version', got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_load_from_with_fallback_non_object() {
+        let path = Migrator::define("test").from::<V3>().into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Array instead of object
+        let json_value: serde_json::Value = serde_json::json!([1, 2, 3]);
+
+        let result: Result<Domain, MigrationError> =
+            migrator.load_from_with_fallback("test", json_value);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MigrationError::DeserializationError(ref msg) if msg.contains("object")),
+            "Expected DeserializationError about object format, got: {:?}",
+            err
+        );
+    }
 }
