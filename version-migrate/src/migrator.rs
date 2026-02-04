@@ -1,6 +1,7 @@
 //! Migration manager and builder pattern for defining type-safe migration paths.
 
 use crate::errors::MigrationError;
+use crate::forward::{ForwardContext, Forwardable};
 use crate::{IntoDomain, MigratesTo, Versioned};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -1034,6 +1035,280 @@ impl Migrator {
                 e
             ))
         })
+    }
+
+    // =========================================================================
+    // Forward Compatibility API
+    // =========================================================================
+
+    /// Loads data with forward compatibility support.
+    ///
+    /// This method allows loading data from versions that don't exist in the current
+    /// codebase yet. Unknown versions are deserialized using the latest known schema,
+    /// and unknown fields are preserved for later saving.
+    ///
+    /// # ⚠️ Requirements
+    ///
+    /// Forward compatibility assumes **additive-only schema changes**:
+    ///
+    /// - ✅ Field additions (future version has new fields) → OK, unknown fields preserved
+    /// - ❌ Field deletions → Deserialization will fail
+    /// - ❌ Field type changes → Data corruption
+    /// - ❌ Field semantic changes → Logic bugs
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - The entity name used when registering the migration path
+    /// * `json` - A JSON string containing versioned data
+    ///
+    /// # Returns
+    ///
+    /// A `Forwardable<D>` wrapper containing the domain model and context for preserving
+    /// unknown fields when saving.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Data from a future version (2.0.0) that doesn't exist in code yet
+    /// let json = r#"{"version":"2.0.0","data":{"id":"1","title":"Task","new_field":"value"}}"#;
+    ///
+    /// // Load with forward compatibility (V1 is the latest known version)
+    /// let mut task: Forwardable<TaskEntity> = migrator.load_forward("task", json)?;
+    ///
+    /// // Check if it was a lossy load
+    /// if task.was_lossy() {
+    ///     eprintln!("Warning: Loaded from unknown version {}", task.original_version());
+    /// }
+    ///
+    /// // Modify the data
+    /// task.title = "Updated".to_string();
+    ///
+    /// // Save preserving unknown fields and original version
+    /// let saved = migrator.save_forward(&task)?;
+    /// // → {"version":"2.0.0","data":{"id":"1","title":"Updated","new_field":"value"}}
+    /// ```
+    pub fn load_forward<D: DeserializeOwned>(
+        &self,
+        entity: &str,
+        json: &str,
+    ) -> Result<Forwardable<D>, MigrationError> {
+        let value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+            MigrationError::DeserializationError(format!("Failed to parse JSON: {}", e))
+        })?;
+        self.load_forward_from(entity, value, false)
+    }
+
+    /// Loads data with forward compatibility support from flat format.
+    ///
+    /// Same as `load_forward` but expects flat format where version is at the same
+    /// level as data fields.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let json = r#"{"version":"2.0.0","id":"1","title":"Task","new_field":"value"}"#;
+    /// let task: Forwardable<TaskEntity> = migrator.load_forward_flat("task", json)?;
+    /// ```
+    pub fn load_forward_flat<D: DeserializeOwned>(
+        &self,
+        entity: &str,
+        json: &str,
+    ) -> Result<Forwardable<D>, MigrationError> {
+        let value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+            MigrationError::DeserializationError(format!("Failed to parse JSON: {}", e))
+        })?;
+        self.load_forward_from(entity, value, true)
+    }
+
+    /// Internal implementation for forward-compatible loading.
+    fn load_forward_from<D: DeserializeOwned>(
+        &self,
+        entity: &str,
+        value: serde_json::Value,
+        is_flat: bool,
+    ) -> Result<Forwardable<D>, MigrationError> {
+        let path = self
+            .paths
+            .get(entity)
+            .ok_or_else(|| MigrationError::EntityNotFound(entity.to_string()))?;
+
+        let version_key = &path.version_key;
+        let data_key = &path.data_key;
+
+        let obj = value.as_object().ok_or_else(|| {
+            MigrationError::DeserializationError("Expected JSON object".to_string())
+        })?;
+
+        // Extract version
+        let original_version = obj
+            .get(version_key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                MigrationError::DeserializationError(format!(
+                    "Missing or invalid '{}' field",
+                    version_key
+                ))
+            })?
+            .to_string();
+
+        // Extract data (handling both wrapped and flat formats)
+        let (data_value, all_fields) = if is_flat {
+            // Flat format: data fields are at the same level as version
+            let mut fields = obj.clone();
+            fields.remove(version_key);
+            (serde_json::Value::Object(fields.clone()), fields)
+        } else {
+            // Wrapped format: data is in a separate field
+            let data = obj
+                .get(data_key)
+                .ok_or_else(|| {
+                    MigrationError::DeserializationError(format!("Missing '{}' field", data_key))
+                })?
+                .clone();
+            let fields = data
+                .as_object()
+                .cloned()
+                .unwrap_or_else(serde_json::Map::new);
+            (data, fields)
+        };
+
+        // Check if version is known
+        let is_known_version = path.versions.contains(&original_version);
+        let was_lossy = !is_known_version;
+
+        // Determine which version to use for deserialization
+        let target_version = if is_known_version {
+            original_version.clone()
+        } else {
+            // Use the latest known version for unknown versions
+            path.versions.last().cloned().ok_or_else(|| {
+                MigrationError::DeserializationError(
+                    "No versions registered for entity".to_string(),
+                )
+            })?
+        };
+
+        // Apply migrations if needed (from known version to latest)
+        let mut current_data = data_value.clone();
+        let mut current_version = if is_known_version {
+            original_version.clone()
+        } else {
+            // For unknown versions, skip migration and deserialize directly
+            target_version.clone()
+        };
+
+        if is_known_version {
+            // Apply migration steps
+            while let Some(migrate_fn) = path.steps.get(&current_version) {
+                current_data = migrate_fn(current_data)?;
+                match path.versions.iter().position(|v| v == &current_version) {
+                    Some(idx) if idx + 1 < path.versions.len() => {
+                        current_version = path.versions[idx + 1].clone();
+                    }
+                    _ => break,
+                }
+            }
+        }
+
+        // Finalize into domain model
+        let domain_value = (path.finalize)(current_data)?;
+
+        // Deserialize to domain type
+        let domain: D = serde_json::from_value(domain_value.clone()).map_err(|e| {
+            MigrationError::DeserializationError(format!("Failed to deserialize domain: {}", e))
+        })?;
+
+        // Calculate unknown fields (fields in original data but not in domain)
+        let domain_obj = domain_value
+            .as_object()
+            .cloned()
+            .unwrap_or_else(serde_json::Map::new);
+        let mut unknown_fields = serde_json::Map::new();
+        for (key, value) in all_fields {
+            if !domain_obj.contains_key(&key) {
+                unknown_fields.insert(key, value);
+            }
+        }
+
+        let ctx = ForwardContext::new(
+            original_version,
+            unknown_fields,
+            was_lossy,
+            version_key.clone(),
+            data_key.clone(),
+            is_flat,
+        );
+
+        Ok(Forwardable::new(domain, ctx))
+    }
+
+    /// Saves data preserving forward compatibility information.
+    ///
+    /// This method saves the domain data while preserving unknown fields from the
+    /// original data and maintaining the original version number.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A `Forwardable<D>` wrapper containing domain data and context
+    ///
+    /// # Returns
+    ///
+    /// A JSON string with preserved unknown fields and original version.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut task: Forwardable<TaskEntity> = migrator.load_forward("task", json)?;
+    /// task.title = "Updated".to_string();
+    /// let saved = migrator.save_forward(&task)?;
+    /// ```
+    pub fn save_forward<D: Serialize>(
+        &self,
+        data: &Forwardable<D>,
+    ) -> Result<String, MigrationError> {
+        let ctx = data.context();
+
+        // Serialize the domain data
+        let mut domain_value = serde_json::to_value(&data.inner).map_err(|e| {
+            MigrationError::SerializationError(format!("Failed to serialize domain: {}", e))
+        })?;
+
+        // Merge unknown fields back
+        if let Some(obj) = domain_value.as_object_mut() {
+            for (key, value) in ctx.unknown_fields.iter() {
+                if !obj.contains_key(key) {
+                    obj.insert(key.clone(), value.clone());
+                }
+            }
+        }
+
+        // Build output based on original format
+        if ctx.was_flat {
+            // Flat format
+            let obj = domain_value.as_object_mut().ok_or_else(|| {
+                MigrationError::SerializationError(
+                    "Domain must serialize to object for flat format".to_string(),
+                )
+            })?;
+            obj.insert(
+                ctx.version_key.clone(),
+                serde_json::Value::String(ctx.original_version.clone()),
+            );
+            serde_json::to_string(&obj).map_err(|e| {
+                MigrationError::SerializationError(format!("Failed to serialize: {}", e))
+            })
+        } else {
+            // Wrapped format
+            let mut wrapper = serde_json::Map::new();
+            wrapper.insert(
+                ctx.version_key.clone(),
+                serde_json::Value::String(ctx.original_version.clone()),
+            );
+            wrapper.insert(ctx.data_key.clone(), domain_value);
+            serde_json::to_string(&wrapper).map_err(|e| {
+                MigrationError::SerializationError(format!("Failed to serialize: {}", e))
+            })
+        }
     }
 
     /// Saves a domain entity to a JSON string using its latest versioned format.

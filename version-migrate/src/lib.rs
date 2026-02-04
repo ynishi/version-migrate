@@ -143,6 +143,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod dir_storage;
 pub mod errors;
+pub mod forward;
 mod migrator;
 pub mod paths;
 pub mod storage;
@@ -529,6 +530,9 @@ pub use dir_storage::{DirStorage, DirStorageStrategy, FilenameEncoding};
 
 #[cfg(feature = "async")]
 pub use dir_storage::AsyncDirStorage;
+
+// Re-export forward compatibility types
+pub use forward::{Forwardable, ForwardContext};
 
 // Re-export paths types
 pub use paths::{AppPaths, PathStrategy, PrefPath};
