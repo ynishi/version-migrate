@@ -526,3 +526,153 @@ mod edge_cases {
         assert_eq!(ctx.unknown_fields().len(), 1);
     }
 }
+
+// Custom keys tests
+mod custom_keys {
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Versioned)]
+    #[versioned(version = "1.0.0")]
+    struct ItemV1 {
+        id: String,
+        name: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    struct ItemEntity {
+        id: String,
+        name: String,
+    }
+
+    impl IntoDomain<ItemEntity> for ItemV1 {
+        fn into_domain(self) -> ItemEntity {
+            ItemEntity {
+                id: self.id,
+                name: self.name,
+            }
+        }
+    }
+
+    fn create_custom_keys_migrator() -> Migrator {
+        let mut migrator = Migrator::new();
+        let path = migrate_path!(
+            "item",
+            [ItemV1, ItemEntity],
+            version_key = "v",
+            data_key = "d"
+        );
+        migrator.register(path).unwrap();
+        migrator
+    }
+
+    #[test]
+    fn test_load_forward_with_custom_keys() {
+        let migrator = create_custom_keys_migrator();
+
+        // Use custom keys "v" and "d" instead of "version" and "data"
+        let json = r#"{"v":"1.0.0","d":{"id":"1","name":"Item"}}"#;
+        let item: Forwardable<ItemEntity> = migrator.load_forward("item", json).unwrap();
+
+        assert_eq!(item.id, "1");
+        assert_eq!(item.name, "Item");
+        assert_eq!(item.original_version(), "1.0.0");
+        assert!(!item.was_lossy());
+    }
+
+    #[test]
+    fn test_load_forward_unknown_version_with_custom_keys() {
+        let migrator = create_custom_keys_migrator();
+
+        // Unknown version with custom keys
+        let json = r#"{"v":"2.0.0","d":{"id":"1","name":"Item","extra":"field"}}"#;
+        let item: Forwardable<ItemEntity> = migrator.load_forward("item", json).unwrap();
+
+        assert_eq!(item.id, "1");
+        assert_eq!(item.original_version(), "2.0.0");
+        assert!(item.was_lossy());
+        assert!(item.unknown_fields().contains_key("extra"));
+    }
+
+    #[test]
+    fn test_save_forward_preserves_custom_keys() {
+        let migrator = create_custom_keys_migrator();
+
+        let json = r#"{"v":"2.0.0","d":{"id":"1","name":"Original","extra":"preserved"}}"#;
+        let mut item: Forwardable<ItemEntity> = migrator.load_forward("item", json).unwrap();
+
+        item.name = "Updated".to_string();
+
+        let saved = migrator.save_forward(&item).unwrap();
+        let saved_value: serde_json::Value = serde_json::from_str(&saved).unwrap();
+
+        // Should use custom keys
+        assert_eq!(saved_value["v"], "2.0.0");
+        assert_eq!(saved_value["d"]["name"], "Updated");
+        assert_eq!(saved_value["d"]["extra"], "preserved");
+        // Should NOT have standard keys
+        assert!(saved_value.get("version").is_none());
+        assert!(saved_value.get("data").is_none());
+    }
+
+    #[test]
+    fn test_roundtrip_with_custom_keys() {
+        let migrator = create_custom_keys_migrator();
+
+        let original = r#"{"v":"2.0.0","d":{"id":"1","name":"Test","future_field":"value"}}"#;
+        let mut item: Forwardable<ItemEntity> = migrator.load_forward("item", original).unwrap();
+
+        item.name = "Modified".to_string();
+
+        let saved = migrator.save_forward(&item).unwrap();
+        let reloaded: Forwardable<ItemEntity> = migrator.load_forward("item", &saved).unwrap();
+
+        assert_eq!(reloaded.name, "Modified");
+        assert_eq!(reloaded.original_version(), "2.0.0");
+        assert!(reloaded.unknown_fields().contains_key("future_field"));
+    }
+
+    #[test]
+    fn test_load_forward_flat_with_custom_version_key() {
+        let migrator = create_custom_keys_migrator();
+
+        // Flat format with custom version key
+        let json = r#"{"v":"2.0.0","id":"1","name":"Item","extra":"field"}"#;
+        let item: Forwardable<ItemEntity> = migrator.load_forward_flat("item", json).unwrap();
+
+        assert_eq!(item.id, "1");
+        assert_eq!(item.original_version(), "2.0.0");
+        assert!(item.was_lossy());
+        assert!(item.unknown_fields().contains_key("extra"));
+    }
+
+    #[test]
+    fn test_save_forward_flat_with_custom_version_key() {
+        let migrator = create_custom_keys_migrator();
+
+        let json = r#"{"v":"2.0.0","id":"1","name":"Original","extra":"keep"}"#;
+        let mut item: Forwardable<ItemEntity> = migrator.load_forward_flat("item", json).unwrap();
+
+        item.name = "Updated".to_string();
+
+        let saved = migrator.save_forward(&item).unwrap();
+        let saved_value: serde_json::Value = serde_json::from_str(&saved).unwrap();
+
+        // Flat format with custom version key
+        assert_eq!(saved_value["v"], "2.0.0");
+        assert_eq!(saved_value["name"], "Updated");
+        assert_eq!(saved_value["extra"], "keep");
+        assert!(saved_value.get("version").is_none());
+        assert!(saved_value.get("d").is_none());
+    }
+
+    #[test]
+    fn test_custom_keys_error_with_wrong_keys() {
+        let migrator = create_custom_keys_migrator();
+
+        // Using standard keys when custom keys are expected
+        let json = r#"{"version":"1.0.0","data":{"id":"1","name":"Item"}}"#;
+        let result: Result<Forwardable<ItemEntity>, _> = migrator.load_forward("item", json);
+
+        assert!(result.is_err());
+    }
+}
