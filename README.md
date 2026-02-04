@@ -31,6 +31,7 @@ Applications that persist data locally (e.g., session data, configuration) requi
 - **File Storage with ACID**: Atomic file operations with retry logic, format conversion (TOML/JSON), and automatic cleanup.
 - **Directory Storage with ACID**: A new storage engine (`DirStorage`) for managing entities as individual files, ideal for session or task management. Also provides a fully non-blocking `AsyncDirStorage` under an `async` feature flag.
 - **Platform-Agnostic Paths**: Unified path management across Linux, macOS, Windows with customizable strategies (System/Xdg/CustomBase)
+- **Forward Compatibility**: Load data from unknown/future versions with `Forwardable<T>` wrapper, preserving unknown fields for non-destructive saves
 
 ## Installation
 
@@ -217,6 +218,54 @@ let task: TaskEntity = migrator.load("task", &json)?;
 - `load_flat(name, json)` - Load from flat format
 - `load_vec(name, json)` - Load Vec of entities
 - `load_with_fallback(name, json)` - Load with legacy data support
+- `load_forward(name, json)` - Load with forward compatibility (unknown versions)
+
+### Forward Compatibility (Forwardable)
+
+When running an older version of your application that doesn't have the latest schema definitions, `load_forward` allows you to load data from unknown/future versions while preserving unknown fields.
+
+```rust
+use version_migrate::Forwardable;
+
+// Data from a future version (2.0.0) that doesn't exist in your code yet
+let json = r#"{"version":"2.0.0","data":{"id":"1","title":"Task","new_field":"preserved"}}"#;
+
+// Load with forward compatibility
+let mut task: Forwardable<TaskEntity> = migrator.load_forward("task", json)?;
+
+// Check if it was from an unknown version
+if task.was_lossy() {
+    eprintln!("Warning: Loaded from unknown version {}", task.original_version());
+}
+
+// Deref allows direct field access
+task.title = "Updated".to_string();
+
+// Save preserving unknown fields and original version
+let saved = migrator.save_forward(&task)?;
+// → {"version":"2.0.0","data":{"id":"1","title":"Updated","new_field":"preserved"}}
+```
+
+**Key features:**
+- `Forwardable<T>` wrapper preserves context for unknown fields
+- `Deref`/`DerefMut` allows transparent access to inner data
+- `was_lossy()` indicates if the version was unknown
+- `original_version()` returns the original version string
+- `unknown_fields()` returns preserved fields not in your schema
+- `save_forward()` preserves unknown fields and original version
+
+**⚠️ Requirements:**
+
+Forward compatibility assumes **additive-only schema changes**:
+
+| Change Type | Supported |
+|-------------|-----------|
+| Field additions | ✅ OK - unknown fields preserved |
+| Field deletions | ❌ Deserialization will fail |
+| Field type changes | ❌ Data corruption |
+| Field semantic changes | ❌ Logic bugs |
+
+If your schema has breaking changes, define a proper migration path instead.
 
 ### Saving Domain Entities Directly
 
