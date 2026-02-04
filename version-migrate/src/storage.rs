@@ -4,7 +4,7 @@
 
 use crate::{errors::IoOperationKind, ConfigMigrator, MigrationError, Migrator, Queryable};
 use serde_json::Value as JsonValue;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 
@@ -432,73 +432,6 @@ impl FileStorage {
     }
 }
 
-/// File lock guard that automatically releases the lock when dropped.
-///
-/// Currently unused, but reserved for future concurrent access features.
-#[allow(dead_code)]
-struct FileLock {
-    file: File,
-    lock_path: PathBuf,
-}
-
-#[allow(dead_code)]
-impl FileLock {
-    /// Acquire an exclusive lock on the given path.
-    fn acquire(path: &Path) -> Result<Self, MigrationError> {
-        // Create lock file path
-        let lock_path = path.with_extension("lock");
-
-        // Ensure parent directory exists
-        if let Some(parent) = lock_path.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent).map_err(|e| MigrationError::LockError {
-                    path: lock_path.display().to_string(),
-                    error: e.to_string(),
-                })?;
-            }
-        }
-
-        // Open or create lock file
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|e| MigrationError::LockError {
-                path: lock_path.display().to_string(),
-                error: e.to_string(),
-            })?;
-
-        // Try to acquire exclusive lock with fs2
-        #[cfg(unix)]
-        {
-            use fs2::FileExt;
-            file.lock_exclusive()
-                .map_err(|e| MigrationError::LockError {
-                    path: lock_path.display().to_string(),
-                    error: format!("Failed to acquire exclusive lock: {}", e),
-                })?;
-        }
-
-        #[cfg(not(unix))]
-        {
-            // On non-Unix systems, we don't have file locking
-            // This is acceptable for single-user desktop apps
-            // For production use on Windows, consider using advisory locking
-        }
-
-        Ok(FileLock { file, lock_path })
-    }
-}
-
-impl Drop for FileLock {
-    fn drop(&mut self) {
-        // Unlock is automatic when the file handle is dropped on Unix
-        // Try to remove lock file (best effort)
-        let _ = fs::remove_file(&self.lock_path);
-    }
-}
-
 /// Convert toml::Value to serde_json::Value.
 fn toml_to_json(toml_value: toml::Value) -> Result<JsonValue, MigrationError> {
     // Serialize toml::Value to JSON string, then parse as serde_json::Value
@@ -817,5 +750,171 @@ mod tests {
         // Verify path() returns the expected path
         let returned_path = storage.path();
         assert_eq!(returned_path, file_path.as_path());
+    }
+
+    #[test]
+    fn test_load_empty_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("empty.toml");
+
+        // Create an empty file
+        fs::write(&file_path, "").unwrap();
+
+        let migrator = setup_migrator();
+        let strategy = FileStorageStrategy::default();
+
+        // Should handle empty file gracefully (treat as empty JSON {})
+        let result = FileStorage::new(file_path, migrator, strategy);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_load_whitespace_only_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("whitespace.toml");
+
+        // Create a file with only whitespace
+        fs::write(&file_path, "   \n\t\n  ").unwrap();
+
+        let migrator = setup_migrator();
+        let strategy = FileStorageStrategy::default();
+
+        // Should handle whitespace-only file gracefully
+        let result = FileStorage::new(file_path, migrator, strategy);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_accessors() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("config_access.toml");
+        let migrator = setup_migrator();
+        let strategy = FileStorageStrategy::default();
+
+        let mut storage = FileStorage::new(file_path, migrator, strategy).unwrap();
+
+        // Test config() immutable access
+        let _config = storage.config();
+
+        // Test config_mut() mutable access
+        let _config_mut = storage.config_mut();
+    }
+
+    #[test]
+    fn test_save_creates_parent_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        // Create a path with non-existent parent directory
+        let file_path = temp_dir
+            .path()
+            .join("subdir")
+            .join("nested")
+            .join("config.toml");
+        let migrator = setup_migrator();
+        let strategy = FileStorageStrategy::new().with_load_behavior(LoadBehavior::CreateIfMissing);
+
+        let storage = FileStorage::new(file_path.clone(), migrator, strategy).unwrap();
+
+        // Save should create parent directories
+        storage.save().unwrap();
+
+        assert!(file_path.exists());
+        assert!(file_path.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn test_cleanup_with_multiple_temp_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("cleanup_test.toml");
+        let migrator = setup_migrator();
+        let strategy = FileStorageStrategy::default();
+
+        // Create some fake old temp files
+        let fake_tmp1 = temp_dir.path().join(".cleanup_test.toml.tmp.99999");
+        let fake_tmp2 = temp_dir.path().join(".cleanup_test.toml.tmp.88888");
+        fs::write(&fake_tmp1, "old temp 1").unwrap();
+        fs::write(&fake_tmp2, "old temp 2").unwrap();
+
+        let mut storage = FileStorage::new(file_path.clone(), migrator, strategy).unwrap();
+
+        // Update and save - should cleanup old temp files
+        let entities = vec![TestEntity {
+            name: "cleanup".to_string(),
+            count: 1,
+        }];
+        storage.update_and_save("test", entities).unwrap();
+
+        // Old temp files should be cleaned up
+        assert!(!fake_tmp1.exists());
+        assert!(!fake_tmp2.exists());
+    }
+
+    #[test]
+    fn test_save_without_cleanup() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("no_cleanup.toml");
+        let migrator = setup_migrator();
+        let strategy = FileStorageStrategy::new().with_cleanup(false);
+
+        // Create a fake old temp file
+        let fake_tmp = temp_dir.path().join(".no_cleanup.toml.tmp.99999");
+        fs::write(&fake_tmp, "old temp").unwrap();
+
+        let mut storage = FileStorage::new(file_path.clone(), migrator, strategy).unwrap();
+
+        let entities = vec![TestEntity {
+            name: "no_cleanup".to_string(),
+            count: 1,
+        }];
+        storage.update_and_save("test", entities).unwrap();
+
+        // Old temp file should NOT be cleaned up when cleanup is disabled
+        assert!(fake_tmp.exists());
+    }
+
+    #[test]
+    fn test_update_without_save() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("update_no_save.toml");
+        let migrator = setup_migrator();
+        let strategy = FileStorageStrategy::default();
+
+        let mut storage = FileStorage::new(file_path.clone(), migrator, strategy).unwrap();
+
+        // Update without save
+        let entities = vec![TestEntity {
+            name: "memory_only".to_string(),
+            count: 42,
+        }];
+        storage.update("test", entities).unwrap();
+
+        // Query should return the updated data (in memory)
+        let loaded: Vec<TestEntity> = storage.query("test").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "memory_only");
+
+        // File should not exist (never saved)
+        assert!(!file_path.exists());
+    }
+
+    #[test]
+    fn test_atomic_write_config_default() {
+        let config = AtomicWriteConfig::default();
+        assert_eq!(config.retry_count, 3);
+        assert!(config.cleanup_tmp_files);
+    }
+
+    #[test]
+    fn test_format_strategy_equality() {
+        assert_eq!(FormatStrategy::Toml, FormatStrategy::Toml);
+        assert_eq!(FormatStrategy::Json, FormatStrategy::Json);
+        assert_ne!(FormatStrategy::Toml, FormatStrategy::Json);
+    }
+
+    #[test]
+    fn test_load_behavior_equality() {
+        assert_eq!(LoadBehavior::CreateIfMissing, LoadBehavior::CreateIfMissing);
+        assert_eq!(LoadBehavior::SaveIfMissing, LoadBehavior::SaveIfMissing);
+        assert_eq!(LoadBehavior::ErrorIfMissing, LoadBehavior::ErrorIfMissing);
+        assert_ne!(LoadBehavior::CreateIfMissing, LoadBehavior::ErrorIfMissing);
     }
 }

@@ -281,4 +281,39 @@ mod tests {
         let inner = forwardable.into_inner();
         assert_eq!(inner, entity);
     }
+
+    #[test]
+    fn test_forwardable_serialize() {
+        let entity = TestEntity {
+            id: "1".to_string(),
+            name: "test".to_string(),
+        };
+        let ctx = ForwardContext::new(
+            "2.0.0".to_string(),
+            serde_json::Map::new(),
+            true,
+            "version".to_string(),
+            "data".to_string(),
+            false,
+        );
+        let forwardable = Forwardable::new(entity, ctx);
+
+        // Test direct serde serialization
+        let json = serde_json::to_string(&forwardable).unwrap();
+        assert!(json.contains("\"id\":\"1\""));
+        assert!(json.contains("\"name\":\"test\""));
+    }
+
+    #[test]
+    fn test_forwardable_deserialize() {
+        // Test direct serde deserialization
+        let json = r#"{"id":"1","name":"test"}"#;
+        let forwardable: Forwardable<TestEntity> = serde_json::from_str(json).unwrap();
+
+        assert_eq!(forwardable.id, "1");
+        assert_eq!(forwardable.name, "test");
+        // Deserialized without load_forward has empty context
+        assert_eq!(forwardable.original_version(), "");
+        assert!(!forwardable.was_lossy());
+    }
 }

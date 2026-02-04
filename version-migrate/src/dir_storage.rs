@@ -2688,4 +2688,75 @@ mod tests {
         assert!(returned_path.ends_with(domain_name));
         assert!(returned_path.exists());
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_dir_storage_create_dir_permission_denied() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Make the temp dir read-only
+        let mut perms = fs::metadata(temp_dir.path()).unwrap().permissions();
+        perms.set_mode(0o444);
+        fs::set_permissions(temp_dir.path(), perms).unwrap();
+
+        let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+            temp_dir.path().to_path_buf(),
+        ));
+
+        let migrator = Migrator::new();
+        let strategy = DirStorageStrategy::default();
+
+        // Should fail because we can't create directory in read-only parent
+        let result = DirStorage::new(paths, "sessions", migrator, strategy);
+
+        // Restore permissions before assertion (so TempDir cleanup works)
+        let mut perms = fs::metadata(temp_dir.path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(temp_dir.path(), perms).unwrap();
+
+        assert!(result.is_err());
+        assert!(matches!(result, Err(MigrationError::IoError { .. })));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_dir_storage_save_permission_denied() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let domain_name = "sessions_readonly";
+        let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+            temp_dir.path().to_path_buf(),
+        ));
+
+        let migrator = setup_session_migrator();
+        let strategy = DirStorageStrategy::default();
+
+        // Create storage first (creates directory)
+        let storage = DirStorage::new(paths, domain_name, migrator, strategy).unwrap();
+
+        // Make the storage directory read-only
+        let mut perms = fs::metadata(storage.base_path()).unwrap().permissions();
+        perms.set_mode(0o444);
+        fs::set_permissions(storage.base_path(), perms).unwrap();
+
+        let session = SessionEntity {
+            id: "test".to_string(),
+            user_id: "user".to_string(),
+            created_at: None,
+        };
+
+        // Should fail because directory is read-only
+        let result = storage.save("session", "test-session", session);
+
+        // Restore permissions before assertion
+        let mut perms = fs::metadata(storage.base_path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(storage.base_path(), perms).unwrap();
+
+        assert!(result.is_err());
+        assert!(matches!(result, Err(MigrationError::IoError { .. })));
+    }
 }

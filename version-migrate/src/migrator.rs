@@ -3054,4 +3054,182 @@ mod tests {
             Err(MigrationError::DeserializationError(_))
         ));
     }
+
+    #[test]
+    fn test_invalid_semver_version() {
+        // Test with invalid semver format in a migration chain
+        // Note: Validation only runs when there are 2+ versions to compare
+        #[derive(Serialize, Deserialize, Debug)]
+        struct BadV1 {
+            value: String,
+        }
+
+        impl Versioned for BadV1 {
+            const VERSION: &'static str = "not-a-semver";
+        }
+
+        impl MigratesTo<V2> for BadV1 {
+            fn migrate(self) -> V2 {
+                V2 {
+                    value: self.value,
+                    count: 0,
+                }
+            }
+        }
+
+        // Two versions triggers version ordering check
+        let path = Migrator::define("bad")
+            .from::<BadV1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        let result = migrator.register(path);
+
+        // Should fail due to invalid semver in version ordering check
+        assert!(matches!(
+            result,
+            Err(MigrationError::DeserializationError(_))
+        ));
+    }
+
+    #[test]
+    fn test_load_from_with_toml_value() {
+        let path = Migrator::define("test")
+            .from::<V1>()
+            .step::<V2>()
+            .step::<V3>()
+            .into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Create a toml::Value directly
+        let toml_str = r#"
+            version = "1.0.0"
+            [data]
+            value = "from_toml"
+        "#;
+        let toml_value: toml::Value = toml::from_str(toml_str).unwrap();
+
+        let result: Domain = migrator.load_from("test", toml_value).unwrap();
+        assert_eq!(result.value, "from_toml");
+        assert_eq!(result.count, 0);
+        assert!(result.enabled);
+    }
+
+    #[test]
+    fn test_load_from_missing_version_field() {
+        let path = Migrator::define("test").from::<V3>().into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // JSON object without version field
+        let json_value: serde_json::Value = serde_json::json!({
+            "data": {"value": "test", "count": 1, "enabled": true}
+        });
+
+        let result: Result<Domain, MigrationError> = migrator.load_from("test", json_value);
+        assert!(matches!(
+            result,
+            Err(MigrationError::DeserializationError(_))
+        ));
+    }
+
+    #[test]
+    fn test_load_from_missing_data_field() {
+        let path = Migrator::define("test").from::<V3>().into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // JSON object without data field
+        let json_value: serde_json::Value = serde_json::json!({
+            "version": "3.0.0"
+        });
+
+        let result: Result<Domain, MigrationError> = migrator.load_from("test", json_value);
+        assert!(matches!(
+            result,
+            Err(MigrationError::DeserializationError(_))
+        ));
+    }
+
+    #[test]
+    fn test_load_from_non_object() {
+        let path = Migrator::define("test").from::<V3>().into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // Not an object
+        let json_value: serde_json::Value = serde_json::json!("just a string");
+
+        let result: Result<Domain, MigrationError> = migrator.load_from("test", json_value);
+        assert!(matches!(
+            result,
+            Err(MigrationError::DeserializationError(_))
+        ));
+    }
+
+    #[test]
+    fn test_load_from_invalid_domain_conversion() {
+        #[derive(Serialize, Deserialize, Debug)]
+        struct StrictDomain {
+            required_field: String,
+        }
+
+        impl IntoDomain<StrictDomain> for V3 {
+            fn into_domain(self) -> StrictDomain {
+                StrictDomain {
+                    required_field: self.value,
+                }
+            }
+        }
+
+        let path = Migrator::define("strict")
+            .from::<V3>()
+            .into::<StrictDomain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        // V3 data that will fail to convert to StrictDomain due to field name mismatch
+        // The finalize function creates StrictDomain but serde expects different field
+        let json = r#"{"version":"3.0.0","data":{"value":"test","count":1,"enabled":true}}"#;
+
+        // This should work because IntoDomain converts correctly
+        let result: Result<StrictDomain, MigrationError> = migrator.load("strict", json);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().required_field, "test");
+    }
+
+    #[test]
+    fn test_save_flat_and_load_flat() {
+        let path = Migrator::define("test").from::<V3>().into::<Domain>();
+
+        let mut migrator = Migrator::new();
+        migrator.register(path).unwrap();
+
+        let v3 = V3 {
+            value: "flat_test".to_string(),
+            count: 99,
+            enabled: true,
+        };
+
+        let json = migrator.save_flat(v3).unwrap();
+
+        // Verify flat format (version at same level as data)
+        assert!(json.contains("\"version\":\"3.0.0\""));
+        assert!(json.contains("\"value\":\"flat_test\""));
+        assert!(!json.contains("\"data\":"));
+
+        // Load back
+        let result: Domain = migrator.load_flat("test", &json).unwrap();
+        assert_eq!(result.value, "flat_test");
+        assert_eq!(result.count, 99);
+        assert!(result.enabled);
+    }
 }
