@@ -17,6 +17,12 @@
 use serde::{Deserialize, Serialize};
 use std::ops::{Deref, DerefMut};
 
+/// Default key name for the version field in serialized data.
+pub(crate) const DEFAULT_VERSION_KEY: &str = "version";
+
+/// Default key name for the data field in serialized data.
+pub(crate) const DEFAULT_DATA_KEY: &str = "data";
+
 /// Context for forward compatibility operations.
 ///
 /// Stores information about the original data that may be lost during
@@ -174,8 +180,8 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Forwardable<T> {
                 String::new(),
                 serde_json::Map::new(),
                 false,
-                "version".to_string(),
-                "data".to_string(),
+                DEFAULT_VERSION_KEY.to_string(),
+                DEFAULT_DATA_KEY.to_string(),
                 false,
             ),
         })
