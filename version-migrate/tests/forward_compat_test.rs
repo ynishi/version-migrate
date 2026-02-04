@@ -282,3 +282,247 @@ mod with_migration {
         assert!(config.unknown_fields().contains_key("new_setting"));
     }
 }
+
+// Error case tests
+mod error_cases {
+    use super::*;
+    use version_migrate::MigrationError;
+
+    #[test]
+    fn test_load_forward_entity_not_found() {
+        let migrator = create_migrator();
+
+        let json = r#"{"version":"1.0.0","data":{"id":"1","title":"Task"}}"#;
+        let result: Result<Forwardable<TaskEntity>, MigrationError> =
+            migrator.load_forward("nonexistent_entity", json);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MigrationError::EntityNotFound(_)),
+            "Expected EntityNotFound, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_load_forward_invalid_json() {
+        let migrator = create_migrator();
+
+        let invalid_json = "{ invalid json }";
+        let result: Result<Forwardable<TaskEntity>, MigrationError> =
+            migrator.load_forward("task", invalid_json);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MigrationError::DeserializationError(_)),
+            "Expected DeserializationError, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_load_forward_missing_version_field() {
+        let migrator = create_migrator();
+
+        // Missing "version" field
+        let json = r#"{"data":{"id":"1","title":"Task"}}"#;
+        let result: Result<Forwardable<TaskEntity>, MigrationError> =
+            migrator.load_forward("task", json);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MigrationError::DeserializationError(_)),
+            "Expected DeserializationError, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_load_forward_missing_data_field() {
+        let migrator = create_migrator();
+
+        // Missing "data" field (wrapped format)
+        let json = r#"{"version":"1.0.0"}"#;
+        let result: Result<Forwardable<TaskEntity>, MigrationError> =
+            migrator.load_forward("task", json);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MigrationError::DeserializationError(_)),
+            "Expected DeserializationError, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_load_forward_domain_deserialization_failure() {
+        let migrator = create_migrator();
+
+        // Data missing required field "title"
+        let json = r#"{"version":"1.0.0","data":{"id":"1"}}"#;
+        let result: Result<Forwardable<TaskEntity>, MigrationError> =
+            migrator.load_forward("task", json);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MigrationError::DeserializationError(_)),
+            "Expected DeserializationError, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_load_forward_flat_missing_version() {
+        let migrator = create_migrator();
+
+        // Flat format without version
+        let json = r#"{"id":"1","title":"Task"}"#;
+        let result: Result<Forwardable<TaskEntity>, MigrationError> =
+            migrator.load_forward_flat("task", json);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MigrationError::DeserializationError(_)),
+            "Expected DeserializationError, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_load_forward_non_object_json() {
+        let migrator = create_migrator();
+
+        // JSON array instead of object
+        let json = r#"[1, 2, 3]"#;
+        let result: Result<Forwardable<TaskEntity>, MigrationError> =
+            migrator.load_forward("task", json);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MigrationError::DeserializationError(_)),
+            "Expected DeserializationError, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_load_forward_version_not_string() {
+        let migrator = create_migrator();
+
+        // version is a number, not string
+        let json = r#"{"version":100,"data":{"id":"1","title":"Task"}}"#;
+        let result: Result<Forwardable<TaskEntity>, MigrationError> =
+            migrator.load_forward("task", json);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MigrationError::DeserializationError(_)),
+            "Expected DeserializationError, got: {:?}",
+            err
+        );
+    }
+}
+
+// Edge case tests
+mod edge_cases {
+    use super::*;
+
+    #[test]
+    fn test_load_forward_empty_unknown_fields() {
+        let migrator = create_migrator();
+
+        // Known version with exact schema match (no unknown fields)
+        let json = r#"{"version":"1.0.0","data":{"id":"1","title":"Task"}}"#;
+        let task: Forwardable<TaskEntity> = migrator.load_forward("task", json).unwrap();
+
+        assert!(task.unknown_fields().is_empty());
+        assert!(!task.was_lossy());
+    }
+
+    #[test]
+    fn test_load_forward_nested_unknown_fields() {
+        let migrator = create_migrator();
+
+        // Unknown version with nested object in unknown field
+        let json = r#"{"version":"2.0.0","data":{"id":"1","title":"Task","metadata":{"key":"value","nested":{"deep":true}}}}"#;
+        let task: Forwardable<TaskEntity> = migrator.load_forward("task", json).unwrap();
+
+        assert!(task.was_lossy());
+        assert!(task.unknown_fields().contains_key("metadata"));
+
+        // Verify nested structure is preserved
+        let metadata = &task.unknown_fields()["metadata"];
+        assert!(metadata.is_object());
+        assert_eq!(metadata["key"], "value");
+        assert_eq!(metadata["nested"]["deep"], true);
+    }
+
+    #[test]
+    fn test_load_forward_array_unknown_field() {
+        let migrator = create_migrator();
+
+        // Unknown version with array in unknown field
+        let json = r#"{"version":"2.0.0","data":{"id":"1","title":"Task","tags":["rust","test","array"]}}"#;
+        let task: Forwardable<TaskEntity> = migrator.load_forward("task", json).unwrap();
+
+        assert!(task.was_lossy());
+        assert!(task.unknown_fields().contains_key("tags"));
+
+        let tags = &task.unknown_fields()["tags"];
+        assert!(tags.is_array());
+        assert_eq!(tags.as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_save_forward_preserves_nested_unknown_fields() {
+        let migrator = create_migrator();
+
+        let json = r#"{"version":"2.0.0","data":{"id":"1","title":"Original","complex":{"a":1,"b":[1,2,3]}}}"#;
+        let mut task: Forwardable<TaskEntity> = migrator.load_forward("task", json).unwrap();
+
+        task.title = "Updated".to_string();
+
+        let saved = migrator.save_forward(&task).unwrap();
+        let saved_value: serde_json::Value = serde_json::from_str(&saved).unwrap();
+
+        // Verify nested unknown field is preserved
+        assert_eq!(saved_value["data"]["complex"]["a"], 1);
+        assert_eq!(saved_value["data"]["complex"]["b"][0], 1);
+        assert_eq!(saved_value["data"]["complex"]["b"][2], 3);
+    }
+
+    #[test]
+    fn test_load_forward_multiple_unknown_fields() {
+        let migrator = create_migrator();
+
+        let json = r#"{"version":"2.0.0","data":{"id":"1","title":"Task","field1":"a","field2":123,"field3":true,"field4":null}}"#;
+        let task: Forwardable<TaskEntity> = migrator.load_forward("task", json).unwrap();
+
+        assert_eq!(task.unknown_fields().len(), 4);
+        assert_eq!(task.unknown_fields()["field1"], "a");
+        assert_eq!(task.unknown_fields()["field2"], 123);
+        assert_eq!(task.unknown_fields()["field3"], true);
+        assert!(task.unknown_fields()["field4"].is_null());
+    }
+
+    #[test]
+    fn test_context_accessors() {
+        let migrator = create_migrator();
+
+        let json = r#"{"version":"2.0.0","data":{"id":"1","title":"Task","extra":"field"}}"#;
+        let task: Forwardable<TaskEntity> = migrator.load_forward("task", json).unwrap();
+
+        let ctx = task.context();
+        assert_eq!(ctx.original_version(), "2.0.0");
+        assert!(ctx.was_lossy());
+        assert_eq!(ctx.unknown_fields().len(), 1);
+    }
+}
