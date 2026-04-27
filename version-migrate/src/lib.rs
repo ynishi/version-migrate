@@ -526,7 +526,8 @@ pub use local_store::{AtomicWriteConfig, FileStorageStrategy, FormatStrategy, Lo
 pub use storage::FileStorage;
 
 // Re-export dir_storage types
-pub use dir_storage::{DirStorage, DirStorageStrategy, FilenameEncoding};
+pub use dir_storage::DirStorage;
+pub use local_store::{DirStorageStrategy, FilenameEncoding};
 
 #[cfg(feature = "async")]
 pub use dir_storage::AsyncDirStorage;
