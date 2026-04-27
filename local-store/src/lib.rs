@@ -1,5 +1,6 @@
 //! Pure path management and raw file storage crate for application config/data directories.
 
+pub mod atomic_io;
 pub mod dir_storage;
 pub mod errors;
 pub mod format_convert;

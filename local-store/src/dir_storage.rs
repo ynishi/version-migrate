@@ -11,6 +11,7 @@
 //!   `impl Into<String>` (never a concrete enum type).
 
 use crate::{
+    atomic_io,
     errors::{IoOperationKind, StoreError},
     AppPaths,
 };
@@ -513,118 +514,6 @@ impl DirStorage {
         Ok(Some(id))
     }
 
-    /// Build the temporary file path used during an atomic write.
-    ///
-    /// The temporary file is created in the same directory as the target so
-    /// that the subsequent rename is always within the same filesystem.
-    ///
-    /// Format: `<parent>/.<filename>.tmp.<pid>`
-    ///
-    /// # Arguments
-    ///
-    /// * `target_path` - The final target path for the write.
-    ///
-    /// # Returns
-    ///
-    /// The path of the temporary file.
-    ///
-    /// # Errors
-    ///
-    /// `StoreError::IoError` if `target_path` has no parent directory or no
-    /// file name component.
-    fn get_temp_path(&self, target_path: &Path) -> Result<PathBuf, StoreError> {
-        let parent = target_path.parent().ok_or_else(|| StoreError::IoError {
-            operation: IoOperationKind::Create,
-            path: target_path.display().to_string(),
-            context: Some("path has no parent directory".to_string()),
-            error: "cannot determine parent for temporary file".to_string(),
-        })?;
-
-        let file_name = target_path.file_name().ok_or_else(|| StoreError::IoError {
-            operation: IoOperationKind::Create,
-            path: target_path.display().to_string(),
-            context: Some("path has no file name".to_string()),
-            error: "cannot determine filename for temporary file".to_string(),
-        })?;
-
-        let tmp_name = format!(
-            ".{}.tmp.{}",
-            file_name.to_string_lossy(),
-            std::process::id()
-        );
-        Ok(parent.join(tmp_name))
-    }
-
-    /// Attempt to atomically rename `tmp_path` to `target_path`, retrying up
-    /// to `strategy.atomic_write.retry_count` times with a 10 ms delay.
-    ///
-    /// # Arguments
-    ///
-    /// * `tmp_path` - Path of the temporary file.
-    /// * `target_path` - Final destination path.
-    ///
-    /// # Errors
-    ///
-    /// `StoreError::IoError { operation: Rename, … }` after all retries
-    /// are exhausted.
-    fn atomic_rename(&self, tmp_path: &Path, target_path: &Path) -> Result<(), StoreError> {
-        let mut last_error = None;
-
-        for attempt in 0..self.strategy.atomic_write.retry_count {
-            match fs::rename(tmp_path, target_path) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    last_error = Some(e);
-                    if attempt + 1 < self.strategy.atomic_write.retry_count {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                }
-            }
-        }
-
-        Err(StoreError::IoError {
-            operation: IoOperationKind::Rename,
-            path: target_path.display().to_string(),
-            context: Some(format!(
-                "after {} retries",
-                self.strategy.atomic_write.retry_count
-            )),
-            error: last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "unknown error after retries".to_string()),
-        })
-    }
-
-    /// Remove orphaned temporary files left by previous failed writes.
-    ///
-    /// Errors are silently ignored (best-effort cleanup).
-    ///
-    /// # Arguments
-    ///
-    /// * `target_path` - The target path whose temp files should be cleaned.
-    fn cleanup_temp_files(&self, target_path: &Path) -> std::io::Result<()> {
-        let parent = match target_path.parent() {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-        let file_name = match target_path.file_name() {
-            Some(f) => f.to_string_lossy(),
-            None => return Ok(()),
-        };
-        let prefix = format!(".{}.tmp.", file_name);
-
-        if let Ok(entries) = fs::read_dir(parent) {
-            for entry in entries.flatten() {
-                if let Ok(name) = entry.file_name().into_string() {
-                    if name.starts_with(&prefix) {
-                        let _ = fs::remove_file(entry.path());
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Write `content` to `path` atomically (tmp file + fsync + rename).
     ///
     /// # Arguments
@@ -648,7 +537,7 @@ impl DirStorage {
             }
         }
 
-        let tmp_path = self.get_temp_path(path)?;
+        let tmp_path = atomic_io::get_temp_path(path)?;
 
         let mut tmp_file = File::create(&tmp_path).map_err(|e| StoreError::IoError {
             operation: IoOperationKind::Create,
@@ -675,10 +564,10 @@ impl DirStorage {
 
         drop(tmp_file);
 
-        self.atomic_rename(&tmp_path, path)?;
+        atomic_io::atomic_rename(&tmp_path, path, self.strategy.atomic_write.retry_count)?;
 
         if self.strategy.atomic_write.cleanup_tmp_files {
-            let _ = self.cleanup_temp_files(path);
+            let _ = atomic_io::cleanup_temp_files(path);
         }
 
         Ok(())
@@ -696,6 +585,7 @@ pub use async_impl::AsyncDirStorage;
 mod async_impl {
     use super::{DirStorageStrategy, FilenameEncoding};
     use crate::{
+        atomic_io,
         errors::{IoOperationKind, StoreError},
         AppPaths,
     };
@@ -1036,83 +926,6 @@ mod async_impl {
             Ok(Some(id))
         }
 
-        fn get_temp_path(&self, target_path: &Path) -> Result<PathBuf, StoreError> {
-            let parent = target_path.parent().ok_or_else(|| StoreError::IoError {
-                operation: IoOperationKind::Create,
-                path: target_path.display().to_string(),
-                context: Some("path has no parent directory".to_string()),
-                error: "cannot determine parent for temporary file".to_string(),
-            })?;
-
-            let file_name = target_path.file_name().ok_or_else(|| StoreError::IoError {
-                operation: IoOperationKind::Create,
-                path: target_path.display().to_string(),
-                context: Some("path has no file name".to_string()),
-                error: "cannot determine filename for temporary file".to_string(),
-            })?;
-
-            let tmp_name = format!(
-                ".{}.tmp.{}",
-                file_name.to_string_lossy(),
-                std::process::id()
-            );
-            Ok(parent.join(tmp_name))
-        }
-
-        async fn atomic_rename(
-            &self,
-            tmp_path: &Path,
-            target_path: &Path,
-        ) -> Result<(), StoreError> {
-            let mut last_error = None;
-
-            for attempt in 0..self.strategy.atomic_write.retry_count {
-                match tokio::fs::rename(tmp_path, target_path).await {
-                    Ok(()) => return Ok(()),
-                    Err(e) => {
-                        last_error = Some(e);
-                        if attempt + 1 < self.strategy.atomic_write.retry_count {
-                            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                        }
-                    }
-                }
-            }
-
-            Err(StoreError::IoError {
-                operation: IoOperationKind::Rename,
-                path: target_path.display().to_string(),
-                context: Some(format!(
-                    "after {} retries (async)",
-                    self.strategy.atomic_write.retry_count
-                )),
-                error: last_error
-                    .map(|e| e.to_string())
-                    .unwrap_or_else(|| "unknown error after retries".to_string()),
-            })
-        }
-
-        async fn cleanup_temp_files(&self, target_path: &Path) -> std::io::Result<()> {
-            let parent = match target_path.parent() {
-                Some(p) => p,
-                None => return Ok(()),
-            };
-            let file_name = match target_path.file_name() {
-                Some(f) => f.to_string_lossy(),
-                None => return Ok(()),
-            };
-            let prefix = format!(".{}.tmp.", file_name);
-
-            let mut entries = tokio::fs::read_dir(parent).await?;
-            while let Some(entry) = entries.next_entry().await? {
-                if let Ok(name) = entry.file_name().into_string() {
-                    if name.starts_with(&prefix) {
-                        let _ = tokio::fs::remove_file(entry.path()).await;
-                    }
-                }
-            }
-            Ok(())
-        }
-
         async fn atomic_write(&self, path: &Path, content: &str) -> Result<(), StoreError> {
             if let Some(parent) = path.parent() {
                 if !tokio::fs::try_exists(parent).await.unwrap_or(false) {
@@ -1127,7 +940,7 @@ mod async_impl {
                 }
             }
 
-            let tmp_path = self.get_temp_path(path)?;
+            let tmp_path = atomic_io::get_temp_path(path)?;
 
             let mut tmp_file =
                 tokio::fs::File::create(&tmp_path)
@@ -1158,10 +971,15 @@ mod async_impl {
 
             drop(tmp_file);
 
-            self.atomic_rename(&tmp_path, path).await?;
+            atomic_io::async_io::atomic_rename(
+                &tmp_path,
+                path,
+                self.strategy.atomic_write.retry_count,
+            )
+            .await?;
 
             if self.strategy.atomic_write.cleanup_tmp_files {
-                let _ = self.cleanup_temp_files(path).await;
+                let _ = atomic_io::async_io::cleanup_temp_files(path).await;
             }
 
             Ok(())
