@@ -145,7 +145,6 @@ pub mod dir_storage;
 pub mod errors;
 pub mod forward;
 mod migrator;
-pub mod paths;
 pub mod storage;
 
 // Re-export the derive macros
@@ -515,7 +514,7 @@ macro_rules! migrator {
 }
 
 // Re-export error types
-pub use errors::{IoOperationKind, MigrationError};
+pub use errors::{IoOperationKind, MigrationError, StoreError};
 
 // Re-export migrator types
 pub use migrator::{ConfigMigrator, MigrationPath, Migrator};
@@ -535,7 +534,7 @@ pub use dir_storage::AsyncDirStorage;
 pub use forward::{ForwardContext, Forwardable};
 
 // Re-export paths types
-pub use paths::{AppPaths, PathStrategy, PrefPath};
+pub use local_store::{AppPaths, PathStrategy, PrefPath};
 
 // Re-export async-trait for user convenience
 #[cfg(feature = "async")]
