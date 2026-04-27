@@ -3,6 +3,7 @@
 //! Provides atomic file operations, format dispatch, and file locking.
 //! This module is intentionally free of any migration or versioning logic.
 
+use crate::atomic_io;
 use crate::errors::{IoOperationKind, StoreError};
 use crate::format_convert::json_to_toml;
 use serde_json::Value as JsonValue;
@@ -183,7 +184,7 @@ impl FileStorage {
             }
         }
 
-        let tmp_path = self.get_temp_path()?;
+        let tmp_path = atomic_io::get_temp_path(&self.path)?;
 
         let mut tmp_file = File::create(&tmp_path).map_err(|e| StoreError::IoError {
             operation: IoOperationKind::Create,
@@ -210,10 +211,14 @@ impl FileStorage {
 
         drop(tmp_file);
 
-        self.atomic_rename(&tmp_path)?;
+        atomic_io::atomic_rename(
+            &tmp_path,
+            &self.path,
+            self.strategy.atomic_write.retry_count,
+        )?;
 
         if self.strategy.atomic_write.cleanup_tmp_files {
-            let _ = self.cleanup_temp_files();
+            let _ = atomic_io::cleanup_temp_files(&self.path);
         }
 
         Ok(())
@@ -260,86 +265,6 @@ impl FileStorage {
                 })
             }
         }
-    }
-
-    /// Compute path to a per-process temporary file.
-    fn get_temp_path(&self) -> Result<PathBuf, StoreError> {
-        let parent = self.path.parent().ok_or_else(|| StoreError::IoError {
-            operation: IoOperationKind::Write,
-            path: self.path.display().to_string(),
-            context: Some("get parent directory".to_string()),
-            error: "path has no parent directory".to_string(),
-        })?;
-
-        let file_name = self.path.file_name().ok_or_else(|| StoreError::IoError {
-            operation: IoOperationKind::Write,
-            path: self.path.display().to_string(),
-            context: Some("get file name".to_string()),
-            error: "path has no file name".to_string(),
-        })?;
-
-        let tmp_name = format!(
-            ".{}.tmp.{}",
-            file_name.to_string_lossy(),
-            std::process::id()
-        );
-        Ok(parent.join(tmp_name))
-    }
-
-    /// Rename `tmp_path` to `self.path` with retry on failure.
-    fn atomic_rename(&self, tmp_path: &Path) -> Result<(), StoreError> {
-        let mut last_error = None;
-
-        for attempt in 0..self.strategy.atomic_write.retry_count {
-            match fs::rename(tmp_path, &self.path) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    last_error = Some(e);
-                    if attempt + 1 < self.strategy.atomic_write.retry_count {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                }
-            }
-        }
-
-        Err(StoreError::IoError {
-            operation: IoOperationKind::Rename,
-            path: self.path.display().to_string(),
-            context: Some(format!(
-                "after {} retries",
-                self.strategy.atomic_write.retry_count
-            )),
-            error: last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "unknown error after retries".to_string()),
-        })
-    }
-
-    /// Remove stale `*.tmp.*` files in the same directory (best effort).
-    fn cleanup_temp_files(&self) -> std::io::Result<()> {
-        let parent = match self.path.parent() {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-
-        let file_name = match self.path.file_name() {
-            Some(f) => f.to_string_lossy().into_owned(),
-            None => return Ok(()),
-        };
-
-        let prefix = format!(".{}.tmp.", file_name);
-
-        if let Ok(entries) = fs::read_dir(parent) {
-            for entry in entries.flatten() {
-                if let Ok(name) = entry.file_name().into_string() {
-                    if name.starts_with(&prefix) {
-                        let _ = fs::remove_file(entry.path());
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 }
 
