@@ -201,7 +201,9 @@ impl VersionedDirStorage {
             FormatStrategy::Json => serde_json::to_string_pretty(value)
                 .map_err(|e| MigrationError::SerializationError(e.to_string())),
             FormatStrategy::Toml => {
-                let tv = json_to_toml(value)?;
+                let tv = local_store::format_convert::json_to_toml(value).map_err(|e| {
+                    MigrationError::Store(local_store::StoreError::FormatConvert(e))
+                })?;
                 toml::to_string_pretty(&tv)
                     .map_err(|e| MigrationError::TomlSerializeError(e.to_string()))
             }
@@ -224,14 +226,6 @@ impl VersionedDirStorage {
 // ============================================================================
 // Format conversion helpers (private, shared with async_impl)
 // ============================================================================
-
-fn json_to_toml(json_value: &serde_json::Value) -> Result<toml::Value, MigrationError> {
-    let json_str = serde_json::to_string(json_value)
-        .map_err(|e| MigrationError::SerializationError(e.to_string()))?;
-    let toml_value: toml::Value = serde_json::from_str(&json_str)
-        .map_err(|e| MigrationError::TomlParseError(e.to_string()))?;
-    Ok(toml_value)
-}
 
 fn toml_to_json(toml_value: toml::Value) -> Result<serde_json::Value, MigrationError> {
     let json_str = serde_json::to_string(&toml_value)
@@ -266,7 +260,7 @@ mod async_impl {
     use local_store::DirStorageStrategy;
     use std::path::Path;
 
-    use super::{json_to_toml, store_err_to_migration, toml_to_json, FormatStrategy};
+    use super::{store_err_to_migration, toml_to_json, FormatStrategy};
 
     /// Async version of `VersionedDirStorage`.
     ///
@@ -442,7 +436,9 @@ mod async_impl {
                 FormatStrategy::Json => serde_json::to_string_pretty(value)
                     .map_err(|e| MigrationError::SerializationError(e.to_string())),
                 FormatStrategy::Toml => {
-                    let tv = json_to_toml(value)?;
+                    let tv = local_store::format_convert::json_to_toml(value).map_err(|e| {
+                        MigrationError::Store(local_store::StoreError::FormatConvert(e))
+                    })?;
                     toml::to_string_pretty(&tv)
                         .map_err(|e| MigrationError::TomlSerializeError(e.to_string()))
                 }
