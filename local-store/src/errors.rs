@@ -1,7 +1,10 @@
 //! Error types for local store operations.
 
 use std::fmt;
+
 use thiserror::Error;
+
+use crate::format_convert::FormatConvertError;
 
 /// File I/O operation kind.
 ///
@@ -95,6 +98,12 @@ pub enum StoreError {
         /// Human-readable reason for the failure.
         reason: String,
     },
+
+    /// Format conversion failed (e.g. JSON → TOML serialization error).
+    ///
+    /// Wraps a [`FormatConvertError`] produced by `local_store::format_convert`.
+    #[error("format conversion: {0}")]
+    FormatConvert(#[from] FormatConvertError),
 }
 
 #[cfg(test)]

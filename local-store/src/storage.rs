@@ -4,6 +4,7 @@
 //! This module is intentionally free of any migration or versioning logic.
 
 use crate::errors::{IoOperationKind, StoreError};
+use crate::format_convert::json_to_toml;
 use serde_json::Value as JsonValue;
 use std::fs::{self, File};
 use std::io::Write as IoWrite;
@@ -250,12 +251,7 @@ impl FileStorage {
                 })
             }
             FormatStrategy::Toml => {
-                let toml_value = json_to_toml(&json_value).map_err(|e| StoreError::IoError {
-                    operation: IoOperationKind::Write,
-                    path: self.path.display().to_string(),
-                    context: Some("serialize default value".to_string()),
-                    error: e.to_string(),
-                })?;
+                let toml_value = json_to_toml(&json_value)?;
                 toml::to_string_pretty(&toml_value).map_err(|e| StoreError::IoError {
                     operation: IoOperationKind::Write,
                     path: self.path.display().to_string(),
@@ -345,19 +341,6 @@ impl FileStorage {
 
         Ok(())
     }
-}
-
-// ---------------------------------------------------------------------------
-// Format conversion helpers (private)
-// ---------------------------------------------------------------------------
-
-/// Convert `serde_json::Value` to `toml::Value`.
-fn json_to_toml(json_value: &JsonValue) -> Result<toml::Value, String> {
-    let json_str =
-        serde_json::to_string(json_value).map_err(|e| format!("json→toml serialize: {e}"))?;
-    let toml_value: toml::Value =
-        serde_json::from_str(&json_str).map_err(|e| format!("json→toml deserialize: {e}"))?;
-    Ok(toml_value)
 }
 
 // ---------------------------------------------------------------------------
