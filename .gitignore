@@ -22,3 +22,8 @@ target
 
 # Ignore Cargo.lock files in libraries
 Cargo.lock
+
+workspace
+.worktrees
+.claude
+.ryo
