@@ -38,642 +38,165 @@
 //! let loaded: SessionEntity = storage.load("session", "session-123")?;
 //! ```
 
-use crate::{
-    errors::{IoOperationKind, StoreError},
-    AppPaths, MigrationError, Migrator,
-};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use crate::{AppPaths, MigrationError, Migrator};
+use std::path::Path;
 
-// Re-export shared types from local_store (storage module re-exports these from local_store)
-pub use local_store::{AtomicWriteConfig, FormatStrategy};
-
-/// File naming encoding strategy for entity IDs.
-///
-/// Determines how entity IDs are encoded into filesystem-safe filenames.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FilenameEncoding {
-    /// Use ID directly as filename (safe characters only: alphanumeric, `-`, `_`)
-    #[default]
-    Direct,
-    /// URL-encode the ID (for IDs with special characters)
-    UrlEncode,
-    /// Base64-encode the ID (for maximum safety)
-    Base64,
-}
-
-/// Strategy configuration for directory-based storage operations.
-#[derive(Debug, Clone)]
-pub struct DirStorageStrategy {
-    /// File format to use (JSON or TOML)
-    pub format: FormatStrategy,
-    /// Atomic write configuration
-    pub atomic_write: AtomicWriteConfig,
-    /// Custom file extension (if None, derived from format)
-    pub extension: Option<String>,
-    /// File naming encoding strategy
-    pub filename_encoding: FilenameEncoding,
-}
-
-impl Default for DirStorageStrategy {
-    fn default() -> Self {
-        Self {
-            format: FormatStrategy::Json,
-            atomic_write: AtomicWriteConfig::default(),
-            extension: None,
-            filename_encoding: FilenameEncoding::default(),
-        }
-    }
-}
-
-impl DirStorageStrategy {
-    /// Create a new strategy with default values.
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the file format.
-    #[allow(dead_code)]
-    pub fn with_format(mut self, format: FormatStrategy) -> Self {
-        self.format = format;
-        self
-    }
-
-    /// Set a custom file extension.
-    #[allow(dead_code)]
-    pub fn with_extension(mut self, ext: impl Into<String>) -> Self {
-        self.extension = Some(ext.into());
-        self
-    }
-
-    /// Set the filename encoding strategy.
-    #[allow(dead_code)]
-    pub fn with_filename_encoding(mut self, encoding: FilenameEncoding) -> Self {
-        self.filename_encoding = encoding;
-        self
-    }
-
-    /// Set the retry count for atomic writes.
-    #[allow(dead_code)]
-    pub fn with_retry_count(mut self, count: usize) -> Self {
-        self.atomic_write.retry_count = count;
-        self
-    }
-
-    /// Set whether to cleanup temporary files.
-    #[allow(dead_code)]
-    pub fn with_cleanup(mut self, cleanup: bool) -> Self {
-        self.atomic_write.cleanup_tmp_files = cleanup;
-        self
-    }
-
-    /// Get the file extension (derived from format if not explicitly set).
-    fn get_extension(&self) -> String {
-        self.extension.clone().unwrap_or_else(|| match self.format {
-            FormatStrategy::Json => "json".to_string(),
-            FormatStrategy::Toml => "toml".to_string(),
-        })
-    }
-}
+// Re-export shared types from local_store.
+pub use local_store::{AtomicWriteConfig, DirStorageStrategy, FilenameEncoding, FormatStrategy};
 
 /// Directory-based entity storage with ACID guarantees and automatic migrations.
 ///
-/// Manages one file per entity, providing:
-/// - **Atomicity**: Updates are all-or-nothing via tmp file + atomic rename
-/// - **Consistency**: Format validation on load/save
-/// - **Isolation**: Each entity has its own file
-/// - **Durability**: Explicit fsync before rename
+/// Manages one file per entity. Raw IO (atomic rename, fsync, temp-file cleanup,
+/// ID encoding/decoding, directory listing) is fully delegated to
+/// `local_store::DirStorage`.
+///
+/// # Responsibilities
+///
+/// - Serialising/deserialising entities to/from the configured format.
+/// - Delegating all ACID / atomic-rename / lock operations to `inner`.
+/// - Applying `Migrator`-based schema evolution on load.
 pub struct DirStorage {
-    /// Resolved base directory path
-    base_path: PathBuf,
-    /// Migrator instance for handling version migrations
+    /// Raw ACID-safe directory store (no migration knowledge).
+    inner: local_store::DirStorage,
+    /// Migrator for schema evolution on save/load.
     migrator: Migrator,
-    /// Storage strategy configuration
-    strategy: DirStorageStrategy,
+    /// Strategy for format dispatch (JSON / TOML).
+    strategy: local_store::DirStorageStrategy,
 }
 
 impl DirStorage {
-    /// Create a new DirStorage instance.
+    /// Create a new `DirStorage` instance.
     ///
     /// # Arguments
     ///
-    /// * `paths` - Application paths manager
-    /// * `domain_name` - Domain-specific subdirectory name (e.g., "sessions", "tasks")
-    /// * `migrator` - Migrator instance with registered migration paths
-    /// * `strategy` - Storage strategy configuration
+    /// * `paths` - Application paths manager.
+    /// * `domain_name` - Domain-specific subdirectory name (e.g., `"sessions"`).
+    /// * `migrator` - Migrator instance with registered migration paths.
+    /// * `strategy` - Storage strategy (format, encoding, atomic-write config).
     ///
     /// # Behavior
     ///
-    /// - Resolves the base path using `paths.data_dir()?.join(domain_name)`
-    /// - Creates the directory if it doesn't exist
-    /// - Does not load existing files (lazy loading)
+    /// Delegates directory creation to `local_store::DirStorage::new`. The base
+    /// path is resolved as `data_dir/domain_name` and created if absent.
     ///
     /// # Errors
     ///
-    /// Returns `MigrationError::IoError` if directory creation fails.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let paths = AppPaths::new("myapp");
-    /// let storage = DirStorage::new(
-    ///     paths,
-    ///     "sessions",
-    ///     migrator,
-    ///     DirStorageStrategy::default(),
-    /// )?;
-    /// ```
+    /// Returns `MigrationError::Store` wrapping a `StoreError::IoError` if
+    /// directory creation fails.
     pub fn new(
         paths: AppPaths,
         domain_name: &str,
         migrator: Migrator,
         strategy: DirStorageStrategy,
     ) -> Result<Self, MigrationError> {
-        // Resolve base path: data_dir/domain_name
-        let base_path = paths.data_dir()?.join(domain_name);
-
-        // Create directory if it doesn't exist
-        if !base_path.exists() {
-            std::fs::create_dir_all(&base_path).map_err(|e| {
-                MigrationError::Store(StoreError::IoError {
-                    operation: IoOperationKind::CreateDir,
-                    path: base_path.display().to_string(),
-                    context: Some("storage base directory".to_string()),
-                    error: e.to_string(),
-                })
-            })?;
-        }
-
+        let inner = local_store::DirStorage::new(paths, domain_name, strategy.clone())
+            .map_err(store_err_to_migration)?;
         Ok(Self {
-            base_path,
+            inner,
             migrator,
             strategy,
         })
     }
 
-    /// Save an entity to a file.
+    /// Save an entity to its file atomically.
     ///
     /// # Arguments
     ///
-    /// * `entity_name` - The entity name registered in the migrator
-    /// * `id` - The unique identifier for this entity (used as filename)
-    /// * `entity` - The entity to save
+    /// * `entity_name` - Entity name registered in the migrator.
+    /// * `id` - Unique identifier for this entity (used as the filename stem).
+    /// * `entity` - Value to persist; must implement `serde::Serialize`.
     ///
     /// # Process
     ///
-    /// 1. Converts the entity to its latest versioned DTO
-    /// 2. Serializes to the configured format (JSON/TOML)
-    /// 3. Writes atomically using temporary file + rename
+    /// 1. Converts `entity` to its latest versioned DTO via `migrator.save_domain_flat`.
+    /// 2. Serialises to the configured format (JSON or TOML).
+    /// 3. Delegates atomic write (tmp file + fsync + rename) to `inner.save_raw_string`.
     ///
     /// # Errors
     ///
-    /// Returns error if:
-    /// - Entity name not registered in migrator
-    /// - ID contains invalid characters (for Direct encoding)
-    /// - Serialization fails
-    /// - File write fails
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let session = SessionEntity {
-    ///     id: "session-123".to_string(),
-    ///     user_id: "user-456".to_string(),
-    /// };
-    /// storage.save("session", "session-123", session)?;
-    /// ```
+    /// Returns `MigrationError` if:
+    /// - `entity_name` is not registered in the migrator.
+    /// - `id` contains invalid characters for the configured encoding.
+    /// - Serialisation or format conversion fails.
+    /// - The underlying file write fails.
     pub fn save<T>(&self, entity_name: &str, id: &str, entity: T) -> Result<(), MigrationError>
     where
         T: serde::Serialize,
     {
-        // Convert entity to latest versioned DTO and get JSON string
         let json_string = self.migrator.save_domain_flat(entity_name, entity)?;
 
-        // Parse back to JSON value for format conversion
         let versioned_value: serde_json::Value = serde_json::from_str(&json_string)
             .map_err(|e| MigrationError::DeserializationError(e.to_string()))?;
 
-        // Serialize to target format (JSON or TOML)
-        let content = self.serialize_content(&versioned_value)?;
-
-        // Get target file path
-        let file_path = self.id_to_path(id)?;
-
-        // Write atomically
-        self.atomic_write(&file_path, &content)?;
-
-        Ok(())
-    }
-
-    /// Convert an entity ID to a file path.
-    ///
-    /// Encodes the ID according to the configured filename encoding strategy
-    /// and appends the appropriate file extension.
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - The entity ID
-    ///
-    /// # Returns
-    ///
-    /// Full path: `base_path/encoded_id.extension`
-    ///
-    /// # Errors
-    ///
-    /// Returns error if ID encoding fails (e.g., invalid characters for Direct encoding).
-    fn id_to_path(&self, id: &str) -> Result<PathBuf, MigrationError> {
-        let encoded_id = self.encode_id(id)?;
-        let extension = self.strategy.get_extension();
-        let filename = format!("{}.{}", encoded_id, extension);
-        Ok(self.base_path.join(filename))
-    }
-
-    /// Encode an entity ID to a filesystem-safe filename.
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - The entity ID to encode
-    ///
-    /// # Encoding Strategies
-    ///
-    /// - **Direct**: Use ID as-is (validates alphanumeric, `-`, `_` only)
-    /// - **UrlEncode**: URL-encode special characters (not yet implemented)
-    /// - **Base64**: Base64-encode the ID (not yet implemented)
-    ///
-    /// # Errors
-    ///
-    /// Returns `MigrationError::FilenameEncoding` if:
-    /// - Direct encoding with invalid characters
-    /// - Encoding strategy not yet implemented
-    fn encode_id(&self, id: &str) -> Result<String, MigrationError> {
-        match self.strategy.filename_encoding {
-            FilenameEncoding::Direct => {
-                // Validate that ID contains only safe characters
-                if id
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                {
-                    Ok(id.to_string())
-                } else {
-                    Err(MigrationError::FilenameEncoding {
-                        id: id.to_string(),
-                        reason: "ID contains invalid characters for Direct encoding. Only alphanumeric, '-', and '_' are allowed.".to_string(),
-                    })
-                }
-            }
-            FilenameEncoding::UrlEncode => {
-                // URL-encode the ID for filesystem safety
-                Ok(urlencoding::encode(id).into_owned())
-            }
-            FilenameEncoding::Base64 => {
-                // Base64-encode the ID using URL-safe encoding without padding
-                Ok(URL_SAFE_NO_PAD.encode(id.as_bytes()))
-            }
-        }
-    }
-
-    /// Serialize a JSON value to string based on the configured format.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - The JSON value to serialize
-    ///
-    /// # Returns
-    ///
-    /// Pretty-printed string in the configured format (JSON or TOML).
-    ///
-    /// # Errors
-    ///
-    /// Returns error if serialization or format conversion fails.
-    fn serialize_content(&self, value: &serde_json::Value) -> Result<String, MigrationError> {
-        match self.strategy.format {
-            FormatStrategy::Json => serde_json::to_string_pretty(value)
-                .map_err(|e| MigrationError::SerializationError(e.to_string())),
+        let content = match self.strategy.format {
+            FormatStrategy::Json => serde_json::to_string_pretty(&versioned_value)
+                .map_err(|e| MigrationError::SerializationError(e.to_string()))?,
             FormatStrategy::Toml => {
-                let toml_value = json_to_toml(value)?;
-                toml::to_string_pretty(&toml_value)
-                    .map_err(|e| MigrationError::TomlSerializeError(e.to_string()))
-            }
-        }
-    }
-
-    /// Write content to a file atomically.
-    ///
-    /// Uses the "temporary file + fsync + atomic rename" pattern to ensure
-    /// durability and atomicity.
-    ///
-    /// # Process
-    ///
-    /// 1. Create temporary file with unique name (`.filename.tmp.{pid}`)
-    /// 2. Write content to temporary file
-    /// 3. Sync to disk (fsync)
-    /// 4. Atomically rename to target path
-    /// 5. Retry on failure (configured retry count)
-    /// 6. Clean up old temporary files (best effort)
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Target file path
-    /// * `content` - Content to write
-    ///
-    /// # Errors
-    ///
-    /// Returns error if file creation, write, sync, or rename fails.
-    fn atomic_write(&self, path: &Path, content: &str) -> Result<(), MigrationError> {
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    MigrationError::Store(StoreError::IoError {
-                        operation: IoOperationKind::CreateDir,
-                        path: parent.display().to_string(),
-                        context: Some("parent directory".to_string()),
-                        error: e.to_string(),
-                    })
+                let tv = local_store::json_to_toml(&versioned_value).map_err(|e| {
+                    MigrationError::Store(local_store::StoreError::FormatConvert(e))
                 })?;
+                toml::to_string_pretty(&tv)
+                    .map_err(|e| MigrationError::TomlSerializeError(e.to_string()))?
             }
-        }
-
-        // Create temporary file path
-        let tmp_path = self.get_temp_path(path)?;
-
-        // Write to temporary file
-        let mut tmp_file = File::create(&tmp_path).map_err(|e| {
-            MigrationError::Store(StoreError::IoError {
-                operation: IoOperationKind::Create,
-                path: tmp_path.display().to_string(),
-                context: Some("temporary file".to_string()),
-                error: e.to_string(),
-            })
-        })?;
-
-        tmp_file.write_all(content.as_bytes()).map_err(|e| {
-            MigrationError::Store(StoreError::IoError {
-                operation: IoOperationKind::Write,
-                path: tmp_path.display().to_string(),
-                context: Some("temporary file".to_string()),
-                error: e.to_string(),
-            })
-        })?;
-
-        // Ensure data is written to disk
-        tmp_file.sync_all().map_err(|e| {
-            MigrationError::Store(StoreError::IoError {
-                operation: IoOperationKind::Sync,
-                path: tmp_path.display().to_string(),
-                context: Some("temporary file".to_string()),
-                error: e.to_string(),
-            })
-        })?;
-
-        drop(tmp_file);
-
-        // Atomic rename with retry
-        self.atomic_rename(&tmp_path, path)?;
-
-        // Cleanup old temp files (best effort)
-        if self.strategy.atomic_write.cleanup_tmp_files {
-            let _ = self.cleanup_temp_files(path);
-        }
-
-        Ok(())
-    }
-
-    /// Get path to temporary file for atomic writes.
-    ///
-    /// Creates a unique temporary filename in the same directory as the target file.
-    /// Format: `.{filename}.tmp.{process_id}`
-    ///
-    /// # Arguments
-    ///
-    /// * `target_path` - The target file path
-    ///
-    /// # Returns
-    ///
-    /// Path to temporary file in the same directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if the path has no parent directory or filename.
-    fn get_temp_path(&self, target_path: &Path) -> Result<PathBuf, MigrationError> {
-        let parent = target_path.parent().ok_or_else(|| {
-            MigrationError::PathResolution("Path has no parent directory".to_string())
-        })?;
-
-        let file_name = target_path
-            .file_name()
-            .ok_or_else(|| MigrationError::PathResolution("Path has no file name".to_string()))?;
-
-        let tmp_name = format!(
-            ".{}.tmp.{}",
-            file_name.to_string_lossy(),
-            std::process::id()
-        );
-        Ok(parent.join(tmp_name))
-    }
-
-    /// Atomically rename temporary file to target path with retry.
-    ///
-    /// Retries the rename operation according to the configured retry count,
-    /// with a small delay between attempts.
-    ///
-    /// # Arguments
-    ///
-    /// * `tmp_path` - Path to temporary file
-    /// * `target_path` - Target file path
-    ///
-    /// # Errors
-    ///
-    /// Returns error if all retry attempts fail.
-    fn atomic_rename(&self, tmp_path: &Path, target_path: &Path) -> Result<(), MigrationError> {
-        let mut last_error = None;
-
-        for attempt in 0..self.strategy.atomic_write.retry_count {
-            match fs::rename(tmp_path, target_path) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    last_error = Some(e);
-                    if attempt + 1 < self.strategy.atomic_write.retry_count {
-                        // Small delay before retry
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                }
-            }
-        }
-
-        Err(MigrationError::Store(StoreError::IoError {
-            operation: IoOperationKind::Rename,
-            path: target_path.display().to_string(),
-            context: Some(format!(
-                "after {} retries",
-                self.strategy.atomic_write.retry_count
-            )),
-            error: last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "unknown error after retries".to_string()),
-        }))
-    }
-
-    /// Clean up old temporary files (best effort).
-    ///
-    /// Attempts to remove old temporary files that may have been left behind
-    /// from previous failed operations. Errors are silently ignored.
-    ///
-    /// # Arguments
-    ///
-    /// * `target_path` - The target file path (used to find related temp files)
-    fn cleanup_temp_files(&self, target_path: &Path) -> std::io::Result<()> {
-        let parent = match target_path.parent() {
-            Some(p) => p,
-            None => return Ok(()),
         };
 
-        let file_name = match target_path.file_name() {
-            Some(f) => f.to_string_lossy(),
-            None => return Ok(()),
-        };
-
-        let prefix = format!(".{}.tmp.", file_name);
-
-        if let Ok(entries) = fs::read_dir(parent) {
-            for entry in entries.flatten() {
-                if let Ok(name) = entry.file_name().into_string() {
-                    if name.starts_with(&prefix) {
-                        // Try to remove, but ignore errors (best effort)
-                        let _ = fs::remove_file(entry.path());
-                    }
-                }
-            }
-        }
-
-        Ok(())
+        self.inner
+            .save_raw_string(entity_name, id, &content)
+            .map_err(store_err_to_migration)
     }
 
-    /// Load an entity from a file.
+    /// Load an entity from its file, applying schema migrations if needed.
     ///
     /// # Arguments
     ///
-    /// * `entity_name` - The entity name registered in the migrator
-    /// * `id` - The unique identifier for the entity
+    /// * `entity_name` - Entity name registered in the migrator.
+    /// * `id` - Unique identifier for the entity.
     ///
     /// # Process
     ///
-    /// 1. Gets the file path using `id_to_path`
-    /// 2. Reads the file content to a string
-    /// 3. Deserializes the content to a `serde_json::Value`
-    /// 4. Migrates the `Value` to the target domain type
+    /// 1. Reads raw string content via `inner.load_raw_string`.
+    /// 2. Deserialises to `serde_json::Value` (converting from TOML if needed).
+    /// 3. Applies schema migration via `migrator.load_flat_from`.
     ///
     /// # Errors
     ///
-    /// Returns error if:
-    /// - Entity name not registered in migrator
-    /// - File not found
-    /// - Deserialization fails
-    /// - Migration fails
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let session: SessionEntity = storage.load("session", "session-123")?;
-    /// ```
+    /// Returns `MigrationError` if the file is missing, parsing fails, or
+    /// migration fails.
     pub fn load<D>(&self, entity_name: &str, id: &str) -> Result<D, MigrationError>
     where
         D: serde::de::DeserializeOwned,
     {
-        // Get file path
-        let file_path = self.id_to_path(id)?;
+        let content = self
+            .inner
+            .load_raw_string(id)
+            .map_err(store_err_to_migration)?;
 
-        // Check if file exists
-        if !file_path.exists() {
-            return Err(MigrationError::Store(StoreError::IoError {
-                operation: IoOperationKind::Read,
-                path: file_path.display().to_string(),
-                context: None,
-                error: "File not found".to_string(),
-            }));
-        }
+        let value = match self.strategy.format {
+            FormatStrategy::Json => serde_json::from_str(&content)
+                .map_err(|e| MigrationError::DeserializationError(e.to_string()))?,
+            FormatStrategy::Toml => {
+                let tv: toml::Value = toml::from_str(&content)
+                    .map_err(|e| MigrationError::TomlParseError(e.to_string()))?;
+                toml_to_json(tv)?
+            }
+        };
 
-        // Read file content
-        let content = fs::read_to_string(&file_path).map_err(|e| {
-            MigrationError::Store(StoreError::IoError {
-                operation: IoOperationKind::Read,
-                path: file_path.display().to_string(),
-                context: None,
-                error: e.to_string(),
-            })
-        })?;
-
-        // Deserialize content to JSON value
-        let value = self.deserialize_content(&content)?;
-
-        // Migrate to domain type using load_flat_from
         self.migrator.load_flat_from(entity_name, value)
     }
 
-    /// List all entity IDs in the storage directory.
+    /// List all entity IDs in the storage directory in lexicographic ascending order.
     ///
     /// # Returns
     ///
-    /// A sorted vector of entity IDs (decoded from filenames).
+    /// A `Vec<String>` of decoded entity IDs, sorted lexicographically.
     ///
     /// # Errors
     ///
-    /// Returns error if:
-    /// - Directory read fails
-    /// - Filename decoding fails
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let ids = storage.list_ids()?;
-    /// for id in ids {
-    ///     println!("Found entity: {}", id);
-    /// }
-    /// ```
+    /// Returns `MigrationError` if the directory cannot be read or a filename
+    /// cannot be decoded.
     pub fn list_ids(&self) -> Result<Vec<String>, MigrationError> {
-        // Read directory
-        let entries = fs::read_dir(&self.base_path).map_err(|e| {
-            MigrationError::Store(StoreError::IoError {
-                operation: IoOperationKind::ReadDir,
-                path: self.base_path.display().to_string(),
-                context: None,
-                error: e.to_string(),
-            })
-        })?;
-
-        let extension = self.strategy.get_extension();
-        let mut ids = Vec::new();
-
-        for entry in entries {
-            let entry = entry.map_err(|e| {
-                MigrationError::Store(StoreError::IoError {
-                    operation: IoOperationKind::ReadDir,
-                    path: self.base_path.display().to_string(),
-                    context: Some("directory entry".to_string()),
-                    error: e.to_string(),
-                })
-            })?;
-
-            let path = entry.path();
-
-            // Check if it's a file with the correct extension
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == extension.as_str() {
-                        // Extract ID from filename
-                        if let Some(id) = self.path_to_id(&path)? {
-                            ids.push(id);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Sort IDs for consistent ordering
+        let mut ids = self.inner.list_ids().map_err(store_err_to_migration)?;
+        // Guarantee lexicographic ascending order even if inner changes behaviour.
         ids.sort();
         Ok(ids)
     }
@@ -682,216 +205,90 @@ impl DirStorage {
     ///
     /// # Arguments
     ///
-    /// * `entity_name` - The entity name registered in the migrator
+    /// * `entity_name` - Entity name registered in the migrator.
     ///
     /// # Returns
     ///
-    /// A vector of `(id, entity)` tuples.
+    /// A `Vec<(id, entity)>` of all stored entities, ordered by ID.
     ///
     /// # Errors
     ///
-    /// Returns error if any entity fails to load. This operation is atomic:
-    /// if any load fails, the whole operation fails.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let sessions: Vec<(String, SessionEntity)> = storage.load_all("session")?;
-    /// for (id, session) in sessions {
-    ///     println!("Loaded session {} for user {}", id, session.user_id);
-    /// }
-    /// ```
+    /// Returns `MigrationError` if any entity fails to load. The whole
+    /// operation fails atomically.
     pub fn load_all<D>(&self, entity_name: &str) -> Result<Vec<(String, D)>, MigrationError>
     where
         D: serde::de::DeserializeOwned,
     {
         let ids = self.list_ids()?;
         let mut results = Vec::new();
-
         for id in ids {
             let entity = self.load(entity_name, &id)?;
             results.push((id, entity));
         }
-
         Ok(results)
     }
 
-    /// Check if an entity exists.
+    /// Check whether an entity file exists.
     ///
     /// # Arguments
     ///
-    /// * `id` - The entity ID
+    /// * `id` - Entity identifier.
     ///
     /// # Returns
     ///
-    /// `true` if the file exists and is a file, `false` otherwise.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// if storage.exists("session-123")? {
-    ///     println!("Session exists");
-    /// }
-    /// ```
-    pub fn exists(&self, id: &str) -> Result<bool, MigrationError> {
-        let file_path = self.id_to_path(id)?;
-        Ok(file_path.exists() && file_path.is_file())
-    }
-
-    /// Delete an entity file.
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - The entity ID
-    ///
-    /// # Behavior
-    ///
-    /// This operation is idempotent: deleting a non-existent file is not an error.
+    /// `true` if the file exists; `false` otherwise.
     ///
     /// # Errors
     ///
-    /// Returns error if file deletion fails (but not if file doesn't exist).
+    /// Returns `MigrationError` if `id` cannot be encoded.
+    pub fn exists(&self, id: &str) -> Result<bool, MigrationError> {
+        self.inner.exists(id).map_err(store_err_to_migration)
+    }
+
+    /// Delete an entity file (idempotent).
     ///
-    /// # Example
+    /// # Arguments
     ///
-    /// ```ignore
-    /// storage.delete("session-123")?;
-    /// ```
+    /// * `id` - Entity identifier.
+    ///
+    /// # Behavior
+    ///
+    /// Deleting a non-existent entity is not an error (`local_store::DirStorage`
+    /// guarantees idempotency).
+    ///
+    /// # Errors
+    ///
+    /// Returns `MigrationError` if the underlying file deletion fails.
     pub fn delete(&self, id: &str) -> Result<(), MigrationError> {
-        let file_path = self.id_to_path(id)?;
-
-        if file_path.exists() {
-            fs::remove_file(&file_path).map_err(|e| {
-                MigrationError::Store(StoreError::IoError {
-                    operation: IoOperationKind::Delete,
-                    path: file_path.display().to_string(),
-                    context: None,
-                    error: e.to_string(),
-                })
-            })?;
-        }
-
-        Ok(())
+        self.inner.delete(id).map_err(store_err_to_migration)
     }
 
     /// Returns a reference to the base directory path.
     ///
     /// # Returns
     ///
-    /// A reference to the resolved base directory path where entities are stored.
+    /// A reference to the resolved base directory path where entity files are stored.
     pub fn base_path(&self) -> &Path {
-        &self.base_path
+        self.inner.base_path()
     }
+}
 
-    /// Deserialize file content to a JSON value.
-    ///
-    /// # Arguments
-    ///
-    /// * `content` - The file content as a string
-    ///
-    /// # Returns
-    ///
-    /// A `serde_json::Value` representing the deserialized content.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if deserialization fails.
-    fn deserialize_content(&self, content: &str) -> Result<serde_json::Value, MigrationError> {
-        match self.strategy.format {
-            FormatStrategy::Json => serde_json::from_str(content)
-                .map_err(|e| MigrationError::DeserializationError(e.to_string())),
-            FormatStrategy::Toml => {
-                let toml_value: toml::Value = toml::from_str(content)
-                    .map_err(|e| MigrationError::TomlParseError(e.to_string()))?;
-                toml_to_json(toml_value)
-            }
+/// Convert a `local_store::StoreError` to `MigrationError`, promoting
+/// `StoreError::FilenameEncoding` to the dedicated `MigrationError::FilenameEncoding`
+/// variant.
+fn store_err_to_migration(e: local_store::StoreError) -> MigrationError {
+    match e {
+        local_store::StoreError::FilenameEncoding { id, reason } => {
+            MigrationError::FilenameEncoding { id, reason }
         }
-    }
-
-    /// Extract the entity ID from a file path.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - The file path
-    ///
-    /// # Returns
-    ///
-    /// `Some(id)` if the path is valid, `None` otherwise.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if ID decoding fails.
-    fn path_to_id(&self, path: &Path) -> Result<Option<String>, MigrationError> {
-        // Get file stem (filename without extension)
-        let file_stem = match path.file_stem() {
-            Some(stem) => stem.to_string_lossy(),
-            None => return Ok(None),
-        };
-
-        // Decode ID
-        let id = self.decode_id(&file_stem)?;
-        Ok(Some(id))
-    }
-
-    /// Decode a filename stem to an entity ID.
-    ///
-    /// # Arguments
-    ///
-    /// * `filename_stem` - The filename without extension
-    ///
-    /// # Returns
-    ///
-    /// The decoded entity ID.
-    ///
-    /// # Encoding Strategies
-    ///
-    /// - **Direct**: Use filename as-is (no decoding needed)
-    /// - **UrlEncode**: URL-decode the filename (not yet implemented)
-    /// - **Base64**: Base64-decode the filename (not yet implemented)
-    ///
-    /// # Errors
-    ///
-    /// Returns error if decoding fails or strategy is not yet implemented.
-    fn decode_id(&self, filename_stem: &str) -> Result<String, MigrationError> {
-        match self.strategy.filename_encoding {
-            FilenameEncoding::Direct => {
-                // Direct encoding: filename is the ID
-                Ok(filename_stem.to_string())
-            }
-            FilenameEncoding::UrlEncode => {
-                // URL-decode the filename to get the original ID
-                urlencoding::decode(filename_stem)
-                    .map(|s| s.into_owned())
-                    .map_err(|e| MigrationError::FilenameEncoding {
-                        id: filename_stem.to_string(),
-                        reason: format!("Failed to URL-decode filename: {}", e),
-                    })
-            }
-            FilenameEncoding::Base64 => {
-                // Base64-decode the filename using URL-safe encoding without padding
-                URL_SAFE_NO_PAD
-                    .decode(filename_stem.as_bytes())
-                    .map_err(|e| MigrationError::FilenameEncoding {
-                        id: filename_stem.to_string(),
-                        reason: format!("Failed to Base64-decode filename: {}", e),
-                    })
-                    .and_then(|bytes| {
-                        String::from_utf8(bytes).map_err(|e| MigrationError::FilenameEncoding {
-                            id: filename_stem.to_string(),
-                            reason: format!(
-                                "Failed to convert Base64-decoded bytes to UTF-8: {}",
-                                e
-                            ),
-                        })
-                    })
-            }
-        }
+        other => MigrationError::Store(other),
     }
 }
 
 /// Convert JSON value to TOML value.
 ///
-/// Helper function for format conversion during serialization.
+/// Used by `async_impl` (AsyncDirStorage) for TOML serialisation on save.
+#[cfg(feature = "async")]
 fn json_to_toml(json_value: &serde_json::Value) -> Result<toml::Value, MigrationError> {
     let json_str = serde_json::to_string(json_value)
         .map_err(|e| MigrationError::SerializationError(e.to_string()))?;
@@ -902,7 +299,8 @@ fn json_to_toml(json_value: &serde_json::Value) -> Result<toml::Value, Migration
 
 /// Convert TOML value to JSON value.
 ///
-/// Helper function for format conversion during deserialization.
+/// Used by the sync `DirStorage::load` for TOML deserialisation, and also by
+/// `async_impl` (AsyncDirStorage) via `use super::toml_to_json`.
 fn toml_to_json(toml_value: toml::Value) -> Result<serde_json::Value, MigrationError> {
     let json_str = serde_json::to_string(&toml_value)
         .map_err(|e| MigrationError::SerializationError(e.to_string()))?;
@@ -1875,6 +1273,10 @@ mod async_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use local_store::StoreError;
+    use std::fs;
     use tempfile::TempDir;
 
     #[test]
@@ -1934,9 +1336,9 @@ mod tests {
         let storage = DirStorage::new(paths, "sessions", migrator, strategy).unwrap();
 
         // Verify directory was created
-        assert!(storage.base_path.exists());
-        assert!(storage.base_path.is_dir());
-        assert!(storage.base_path.ends_with("data/testapp/sessions"));
+        assert!(storage.base_path().exists());
+        assert!(storage.base_path().is_dir());
+        assert!(storage.base_path().ends_with("data/testapp/sessions"));
     }
 
     #[test]
@@ -1956,7 +1358,7 @@ mod tests {
         let storage2 = DirStorage::new(paths, "sessions", migrator2, strategy).unwrap();
 
         // Both should succeed and point to the same directory
-        assert_eq!(storage1.base_path, storage2.base_path);
+        assert_eq!(storage1.base_path(), storage2.base_path());
     }
 
     // Test entity types for save tests
@@ -2054,7 +1456,7 @@ mod tests {
         storage.save("session", "session-123", session).unwrap();
 
         // Verify file was created
-        let file_path = storage.base_path.join("session-123.json");
+        let file_path = storage.base_path().join("session-123.json");
         assert!(file_path.exists());
 
         // Verify content is valid JSON with version
@@ -2087,7 +1489,7 @@ mod tests {
         storage.save("session", "session-789", session).unwrap();
 
         // Verify file was created
-        let file_path = storage.base_path.join("session-789.toml");
+        let file_path = storage.base_path().join("session-789.toml");
         assert!(file_path.exists());
 
         // Verify content is valid TOML with version
@@ -2146,7 +1548,7 @@ mod tests {
         storage.save("session", "session-custom", session).unwrap();
 
         // Verify custom extension is used
-        let file_path = storage.base_path.join("session-custom.data");
+        let file_path = storage.base_path().join("session-custom.data");
         assert!(file_path.exists());
     }
 
@@ -2182,7 +1584,7 @@ mod tests {
             .unwrap();
 
         // Verify file was overwritten
-        let file_path = storage.base_path.join("session-overwrite.json");
+        let file_path = storage.base_path().join("session-overwrite.json");
         let content = std::fs::read_to_string(&file_path).unwrap();
         let json: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(json["user_id"], "user-222");
@@ -2539,7 +1941,7 @@ mod tests {
         storage.save("session", "session-1", session1).unwrap();
 
         // Manually create a corrupted file
-        let corrupted_path = storage.base_path.join("session-corrupted.json");
+        let corrupted_path = storage.base_path().join("session-corrupted.json");
         std::fs::write(&corrupted_path, "invalid json {{{").unwrap();
 
         // load_all should fail
@@ -2574,7 +1976,7 @@ mod tests {
 
         // Verify the file was created with encoded filename
         let encoded_id = urlencoding::encode(complex_id);
-        let file_path = storage.base_path.join(format!("{}.json", encoded_id));
+        let file_path = storage.base_path().join(format!("{}.json", encoded_id));
         assert!(file_path.exists());
 
         // Load it back
@@ -2616,7 +2018,7 @@ mod tests {
 
         // Verify the file was created with Base64-encoded filename
         let encoded_id = URL_SAFE_NO_PAD.encode(complex_id.as_bytes());
-        let file_path = storage.base_path.join(format!("{}.json", encoded_id));
+        let file_path = storage.base_path().join(format!("{}.json", encoded_id));
         assert!(file_path.exists());
 
         // Load it back
@@ -2631,57 +2033,66 @@ mod tests {
         assert_eq!(ids[0], complex_id);
     }
 
+    /// Test that list_ids returns a FilenameEncoding error when a file with an
+    /// undecoded URL-encoded name (invalid UTF-8 percent sequence) is present in the
+    /// storage directory.
     #[test]
-    fn test_decode_id_error_handling() {
+    fn test_list_ids_url_decode_error() {
         let temp_dir = TempDir::new().unwrap();
         let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
             temp_dir.path().to_path_buf(),
         ));
 
-        // Test UrlEncode decoding with invalid percent encoding
-        // The urlencoding crate handles most cases gracefully, but we can test
-        // that it properly decodes even with partial sequences (which it does)
-        let migrator_url = setup_session_migrator();
-        let strategy_url =
+        let migrator = setup_session_migrator();
+        let strategy =
             DirStorageStrategy::default().with_filename_encoding(FilenameEncoding::UrlEncode);
-        let storage_url =
-            DirStorage::new(paths.clone(), "sessions_url", migrator_url, strategy_url).unwrap();
+        let storage = DirStorage::new(paths, "sessions_url_err", migrator, strategy).unwrap();
 
-        // Invalid UTF-8 percent encoding - this should fail
-        let invalid_url_encoded = "%C0%C1"; // Invalid UTF-8 sequence
-        let result = storage_url.decode_id(invalid_url_encoded);
-        assert!(result.is_err());
-        if let Err(MigrationError::FilenameEncoding { id, reason }) = result {
-            assert_eq!(id, invalid_url_encoded);
-            assert!(reason.contains("Failed to URL-decode filename"));
-        }
+        // Manually create a file whose stem is an invalid UTF-8 percent sequence.
+        // `%C0%C1` is an overlong encoding that the urlencoding crate rejects.
+        let bad_stem = "%C0%C1";
+        let bad_file = storage.base_path().join(format!("{}.json", bad_stem));
+        std::fs::write(&bad_file, "{}").unwrap();
 
-        // Test Base64 decoding with invalid input
-        let migrator_base64 = setup_session_migrator();
-        let strategy_base64 =
+        let result = storage.list_ids();
+        assert!(
+            result.is_err(),
+            "list_ids should propagate the FilenameEncoding decode error"
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            MigrationError::FilenameEncoding { .. }
+        ));
+    }
+
+    /// Test that list_ids returns a FilenameEncoding error when a file with an
+    /// invalid Base64-encoded name is present in the storage directory.
+    #[test]
+    fn test_list_ids_base64_decode_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let paths = AppPaths::new("testapp").data_strategy(crate::PathStrategy::CustomBase(
+            temp_dir.path().to_path_buf(),
+        ));
+
+        let migrator = setup_session_migrator();
+        let strategy =
             DirStorageStrategy::default().with_filename_encoding(FilenameEncoding::Base64);
-        let storage_base64 =
-            DirStorage::new(paths, "sessions_base64", migrator_base64, strategy_base64).unwrap();
+        let storage = DirStorage::new(paths, "sessions_b64_err", migrator, strategy).unwrap();
 
-        // Invalid Base64 string (contains invalid characters)
-        let invalid_base64 = "!!!invalid@@@";
-        let result = storage_base64.decode_id(invalid_base64);
-        assert!(result.is_err());
-        if let Err(MigrationError::FilenameEncoding { id, reason }) = result {
-            assert_eq!(id, invalid_base64);
-            assert!(reason.contains("Failed to Base64-decode filename"));
-        }
+        // Manually create a file whose stem is not valid Base64.
+        let bad_stem = "!!!invalid@@@";
+        let bad_file = storage.base_path().join(format!("{}.json", bad_stem));
+        std::fs::write(&bad_file, "{}").unwrap();
 
-        // Test Base64 with valid Base64 but invalid UTF-8
-        // Create a Base64 string from invalid UTF-8 bytes
-        let invalid_utf8_bytes = vec![0xFF, 0xFE, 0xFD];
-        let valid_base64_invalid_utf8 = URL_SAFE_NO_PAD.encode(&invalid_utf8_bytes);
-        let result = storage_base64.decode_id(&valid_base64_invalid_utf8);
-        assert!(result.is_err());
-        if let Err(MigrationError::FilenameEncoding { id, reason }) = result {
-            assert_eq!(id, valid_base64_invalid_utf8);
-            assert!(reason.contains("Failed to convert Base64-decoded bytes to UTF-8"));
-        }
+        let result = storage.list_ids();
+        assert!(
+            result.is_err(),
+            "list_ids should propagate the FilenameEncoding decode error"
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            MigrationError::FilenameEncoding { .. }
+        ));
     }
 
     #[test]
