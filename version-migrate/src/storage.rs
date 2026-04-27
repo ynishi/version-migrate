@@ -2,7 +2,10 @@
 //!
 //! Provides atomic file operations, format conversion, and file locking.
 
-use crate::{errors::IoOperationKind, ConfigMigrator, MigrationError, Migrator, Queryable};
+use crate::{
+    errors::{IoOperationKind, StoreError},
+    ConfigMigrator, MigrationError, Migrator, Queryable,
+};
 use serde_json::Value as JsonValue;
 use std::fs::{self, File};
 use std::io::Write as IoWrite;
@@ -173,11 +176,13 @@ impl FileStorage {
 
         // Load file content if it exists
         let json_string = if path.exists() {
-            let content = fs::read_to_string(&path).map_err(|e| MigrationError::IoError {
-                operation: IoOperationKind::Read,
-                path: path.display().to_string(),
-                context: None,
-                error: e.to_string(),
+            let content = fs::read_to_string(&path).map_err(|e| {
+                MigrationError::Store(StoreError::IoError {
+                    operation: IoOperationKind::Read,
+                    path: path.display().to_string(),
+                    context: None,
+                    error: e.to_string(),
+                })
             })?;
 
             if content.trim().is_empty() {
@@ -209,12 +214,12 @@ impl FileStorage {
                     }
                 }
                 LoadBehavior::ErrorIfMissing => {
-                    return Err(MigrationError::IoError {
+                    return Err(MigrationError::Store(StoreError::IoError {
                         operation: IoOperationKind::Read,
                         path: path.display().to_string(),
                         context: None,
                         error: "File not found".to_string(),
-                    });
+                    }));
                 }
             }
         };
@@ -244,11 +249,13 @@ impl FileStorage {
         // Ensure parent directory exists
         if let Some(parent) = self.path.parent() {
             if !parent.exists() {
-                fs::create_dir_all(parent).map_err(|e| MigrationError::IoError {
-                    operation: IoOperationKind::CreateDir,
-                    path: parent.display().to_string(),
-                    context: Some("parent directory".to_string()),
-                    error: e.to_string(),
+                fs::create_dir_all(parent).map_err(|e| {
+                    MigrationError::Store(StoreError::IoError {
+                        operation: IoOperationKind::CreateDir,
+                        path: parent.display().to_string(),
+                        context: Some("parent directory".to_string()),
+                        error: e.to_string(),
+                    })
                 })?;
             }
         }
@@ -269,28 +276,32 @@ impl FileStorage {
 
         // Write to temporary file
         let tmp_path = self.get_temp_path()?;
-        let mut tmp_file = File::create(&tmp_path).map_err(|e| MigrationError::IoError {
-            operation: IoOperationKind::Create,
-            path: tmp_path.display().to_string(),
-            context: Some("temporary file".to_string()),
-            error: e.to_string(),
+        let mut tmp_file = File::create(&tmp_path).map_err(|e| {
+            MigrationError::Store(StoreError::IoError {
+                operation: IoOperationKind::Create,
+                path: tmp_path.display().to_string(),
+                context: Some("temporary file".to_string()),
+                error: e.to_string(),
+            })
         })?;
 
-        tmp_file
-            .write_all(content.as_bytes())
-            .map_err(|e| MigrationError::IoError {
+        tmp_file.write_all(content.as_bytes()).map_err(|e| {
+            MigrationError::Store(StoreError::IoError {
                 operation: IoOperationKind::Write,
                 path: tmp_path.display().to_string(),
                 context: Some("temporary file".to_string()),
                 error: e.to_string(),
-            })?;
+            })
+        })?;
 
         // Ensure data is written to disk
-        tmp_file.sync_all().map_err(|e| MigrationError::IoError {
-            operation: IoOperationKind::Sync,
-            path: tmp_path.display().to_string(),
-            context: Some("temporary file".to_string()),
-            error: e.to_string(),
+        tmp_file.sync_all().map_err(|e| {
+            MigrationError::Store(StoreError::IoError {
+                operation: IoOperationKind::Sync,
+                path: tmp_path.display().to_string(),
+                context: Some("temporary file".to_string()),
+                error: e.to_string(),
+            })
         })?;
 
         drop(tmp_file);
@@ -390,7 +401,7 @@ impl FileStorage {
             }
         }
 
-        Err(MigrationError::IoError {
+        Err(MigrationError::Store(StoreError::IoError {
             operation: IoOperationKind::Rename,
             path: self.path.display().to_string(),
             context: Some(format!(
@@ -400,7 +411,7 @@ impl FileStorage {
             error: last_error
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "unknown error after retries".to_string()),
-        })
+        }))
     }
 
     /// Clean up old temporary files (best effort).
@@ -609,7 +620,10 @@ mod tests {
         let result = FileStorage::new(file_path, migrator, strategy);
 
         assert!(result.is_err()); // Should error when file doesn't exist
-        assert!(matches!(result, Err(MigrationError::IoError { .. })));
+        assert!(matches!(
+            result,
+            Err(MigrationError::Store(StoreError::IoError { .. }))
+        ));
     }
 
     #[test]
