@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "version-migrate",
     "version-migrate-macro",
+    "local-store",
 ]
 
 [workspace.package]

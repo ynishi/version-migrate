@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - ReleaseDate
 
 ### Added
+- New `local-store` crate extracted from `version-migrate` as a standalone path and storage primitive
+  - `AppPaths`: platform-agnostic path resolver (Linux/macOS/Windows) with configurable strategies
+  - `PathStrategy`: enum for path resolution mode (`System`, `Xdg`, `CustomBase`)
+  - `PrefPath`: preference-path helper built on `AppPaths`
+  - `StoreError`: dedicated error type for path/IO operations (variants: `HomeDirNotFound`, `IoError { operation, path, context, error }`)
+  - `IoOperationKind`: enum classifying IO operation kinds (8 variants with `Display` impl)
+- `version-migrate` re-exports `AppPaths`, `PathStrategy`, `PrefPath`, `StoreError`, and `IoOperationKind` from `local-store` for backward-compatible import paths
+
+### Removed
+- `pub mod paths` module removed from `version-migrate`; callers using `version_migrate::paths::AppPaths` must migrate to `version_migrate::AppPaths` (pre-1.0 breaking change, SemVer minor bump 0.19 → 0.20)
+
+### Changed
+- **BREAKING**: `MigrationError::IoError` and `MigrationError::HomeDirNotFound` variants removed. Replaced by `MigrationError::Store(StoreError)` via `#[from] StoreError` wiring. Pattern matches on these variants must be updated to `MigrationError::Store(StoreError::IoError { .. })` and `MigrationError::Store(StoreError::HomeDirNotFound)` respectively.
+
 - Initial implementation of `version-migrate` core library
 - `Versioned` trait for marking versioned data schemas
 - `MigratesTo<T>` trait for explicit migration logic

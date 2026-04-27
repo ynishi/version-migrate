@@ -1096,10 +1096,11 @@ fn test_config_persistence() {
 
 ## Architecture
 
-The library is split into two crates:
+The library is split into three crates:
 
-- **`version-migrate`**: Core library with traits, `Migrator`, and error types
-- **`version-migrate-macro`**: Procedural macro for deriving `Versioned` trait
+- **`local-store`**: Standalone path and storage primitive crate. Provides `AppPaths`, `PathStrategy`, `PrefPath`, `StoreError`, and `IoOperationKind`. Has minimal dependencies (`dirs`, `thiserror`) and can be used independently of `version-migrate`.
+- **`version-migrate`**: Core library with traits, `Migrator`, storage engines (`FileStorage`, `DirStorage`), and error types. Re-exports all `local-store` public types so existing import paths remain unchanged.
+- **`version-migrate-macro`**: Procedural macro for deriving `Versioned` trait.
 
 This mirrors the structure of popular libraries like `serde`.
 

@@ -2,7 +2,7 @@
 //!
 //! Provides unified path resolution strategies across different platforms.
 
-use crate::{errors::IoOperationKind, MigrationError};
+use crate::errors::{IoOperationKind, StoreError};
 use std::path::PathBuf;
 
 /// Path resolution strategy.
@@ -40,7 +40,7 @@ pub enum PathStrategy {
 /// # Example
 ///
 /// ```ignore
-/// use version_migrate::{AppPaths, PathStrategy};
+/// use local_store::{AppPaths, PathStrategy};
 ///
 /// // Use OS-standard directories (default)
 /// let paths = AppPaths::new("myapp");
@@ -120,8 +120,8 @@ impl AppPaths {
     ///
     /// # Errors
     ///
-    /// Returns `MigrationError::HomeDirNotFound` if the home directory cannot be determined.
-    /// Returns `MigrationError::IoError` if directory creation fails.
+    /// Returns `StoreError::HomeDirNotFound` if the home directory cannot be determined.
+    /// Returns `StoreError::IoError` if directory creation fails.
     ///
     /// # Example
     ///
@@ -130,7 +130,7 @@ impl AppPaths {
     /// // On Linux with System strategy: ~/.config/myapp
     /// // On macOS with System strategy: ~/Library/Application Support/myapp
     /// ```
-    pub fn config_dir(&self) -> Result<PathBuf, MigrationError> {
+    pub fn config_dir(&self) -> Result<PathBuf, StoreError> {
         let dir = self.resolve_config_dir()?;
         self.ensure_dir_exists(&dir)?;
         Ok(dir)
@@ -146,8 +146,8 @@ impl AppPaths {
     ///
     /// # Errors
     ///
-    /// Returns `MigrationError::HomeDirNotFound` if the home directory cannot be determined.
-    /// Returns `MigrationError::IoError` if directory creation fails.
+    /// Returns `StoreError::HomeDirNotFound` if the home directory cannot be determined.
+    /// Returns `StoreError::IoError` if directory creation fails.
     ///
     /// # Example
     ///
@@ -156,7 +156,7 @@ impl AppPaths {
     /// // On Linux with System strategy: ~/.local/share/myapp
     /// // On macOS with System strategy: ~/Library/Application Support/myapp
     /// ```
-    pub fn data_dir(&self) -> Result<PathBuf, MigrationError> {
+    pub fn data_dir(&self) -> Result<PathBuf, StoreError> {
         let dir = self.resolve_data_dir()?;
         self.ensure_dir_exists(&dir)?;
         Ok(dir)
@@ -177,7 +177,7 @@ impl AppPaths {
     /// let config_file = paths.config_file("config.toml")?;
     /// // On Linux with System strategy: ~/.config/myapp/config.toml
     /// ```
-    pub fn config_file(&self, filename: &str) -> Result<PathBuf, MigrationError> {
+    pub fn config_file(&self, filename: &str) -> Result<PathBuf, StoreError> {
         Ok(self.config_dir()?.join(filename))
     }
 
@@ -196,21 +196,21 @@ impl AppPaths {
     /// let data_file = paths.data_file("cache.db")?;
     /// // On Linux with System strategy: ~/.local/share/myapp/cache.db
     /// ```
-    pub fn data_file(&self, filename: &str) -> Result<PathBuf, MigrationError> {
+    pub fn data_file(&self, filename: &str) -> Result<PathBuf, StoreError> {
         Ok(self.data_dir()?.join(filename))
     }
 
     /// Resolve the configuration directory path based on the strategy.
-    fn resolve_config_dir(&self) -> Result<PathBuf, MigrationError> {
+    fn resolve_config_dir(&self) -> Result<PathBuf, StoreError> {
         match &self.config_strategy {
             PathStrategy::System => {
                 // Use OS-standard config directory
-                let base = dirs::config_dir().ok_or(MigrationError::HomeDirNotFound)?;
+                let base = dirs::config_dir().ok_or(StoreError::HomeDirNotFound)?;
                 Ok(base.join(&self.app_name))
             }
             PathStrategy::Xdg => {
                 // Force XDG on all platforms
-                let home = dirs::home_dir().ok_or(MigrationError::HomeDirNotFound)?;
+                let home = dirs::home_dir().ok_or(StoreError::HomeDirNotFound)?;
                 Ok(home.join(".config").join(&self.app_name))
             }
             PathStrategy::CustomBase(base) => Ok(base.join(&self.app_name)),
@@ -218,16 +218,16 @@ impl AppPaths {
     }
 
     /// Resolve the data directory path based on the strategy.
-    fn resolve_data_dir(&self) -> Result<PathBuf, MigrationError> {
+    fn resolve_data_dir(&self) -> Result<PathBuf, StoreError> {
         match &self.data_strategy {
             PathStrategy::System => {
                 // Use OS-standard data directory
-                let base = dirs::data_dir().ok_or(MigrationError::HomeDirNotFound)?;
+                let base = dirs::data_dir().ok_or(StoreError::HomeDirNotFound)?;
                 Ok(base.join(&self.app_name))
             }
             PathStrategy::Xdg => {
                 // Force XDG on all platforms
-                let home = dirs::home_dir().ok_or(MigrationError::HomeDirNotFound)?;
+                let home = dirs::home_dir().ok_or(StoreError::HomeDirNotFound)?;
                 Ok(home.join(".local/share").join(&self.app_name))
             }
             PathStrategy::CustomBase(base) => Ok(base.join("data").join(&self.app_name)),
@@ -235,9 +235,9 @@ impl AppPaths {
     }
 
     /// Ensure a directory exists, creating it if necessary.
-    fn ensure_dir_exists(&self, path: &PathBuf) -> Result<(), MigrationError> {
+    fn ensure_dir_exists(&self, path: &PathBuf) -> Result<(), StoreError> {
         if !path.exists() {
-            std::fs::create_dir_all(path).map_err(|e| MigrationError::IoError {
+            std::fs::create_dir_all(path).map_err(|e| StoreError::IoError {
                 operation: IoOperationKind::CreateDir,
                 path: path.display().to_string(),
                 context: None,
@@ -258,7 +258,7 @@ impl AppPaths {
 /// # Example
 ///
 /// ```ignore
-/// use version_migrate::PrefPath;
+/// use local_store::PrefPath;
 ///
 /// let pref = PrefPath::new("com.example.myapp");
 /// let pref_file = pref.pref_file("settings.plist")?;
@@ -301,8 +301,8 @@ impl PrefPath {
     ///
     /// # Errors
     ///
-    /// Returns `MigrationError::HomeDirNotFound` if the home directory cannot be determined.
-    /// Returns `MigrationError::IoError` if directory creation fails.
+    /// Returns `StoreError::HomeDirNotFound` if the home directory cannot be determined.
+    /// Returns `StoreError::IoError` if directory creation fails.
     ///
     /// # Example
     ///
@@ -310,7 +310,7 @@ impl PrefPath {
     /// let pref_dir = pref.pref_dir()?;
     /// // On macOS: ~/Library/Preferences/com.example.myapp
     /// ```
-    pub fn pref_dir(&self) -> Result<PathBuf, MigrationError> {
+    pub fn pref_dir(&self) -> Result<PathBuf, StoreError> {
         let dir = self.resolve_pref_dir()?;
         self.ensure_dir_exists(&dir)?;
         Ok(dir)
@@ -331,31 +331,31 @@ impl PrefPath {
     /// let pref_file = pref.pref_file("settings.plist")?;
     /// // On macOS: ~/Library/Preferences/com.example.myapp/settings.plist
     /// ```
-    pub fn pref_file(&self, filename: &str) -> Result<PathBuf, MigrationError> {
+    pub fn pref_file(&self, filename: &str) -> Result<PathBuf, StoreError> {
         Ok(self.pref_dir()?.join(filename))
     }
 
     /// Resolve the preference directory path based on OS.
-    fn resolve_pref_dir(&self) -> Result<PathBuf, MigrationError> {
+    fn resolve_pref_dir(&self) -> Result<PathBuf, StoreError> {
         #[cfg(target_os = "macos")]
         {
             // macOS: ~/Library/Preferences
-            let home = dirs::home_dir().ok_or(MigrationError::HomeDirNotFound)?;
+            let home = dirs::home_dir().ok_or(StoreError::HomeDirNotFound)?;
             Ok(home.join("Library/Preferences").join(&self.app_name))
         }
 
         #[cfg(not(target_os = "macos"))]
         {
             // Linux/Windows: Use OS-standard config directory
-            let base = dirs::config_dir().ok_or(MigrationError::HomeDirNotFound)?;
+            let base = dirs::config_dir().ok_or(StoreError::HomeDirNotFound)?;
             Ok(base.join(&self.app_name))
         }
     }
 
     /// Ensure a directory exists, creating it if necessary.
-    fn ensure_dir_exists(&self, path: &PathBuf) -> Result<(), MigrationError> {
+    fn ensure_dir_exists(&self, path: &PathBuf) -> Result<(), StoreError> {
         if !path.exists() {
-            std::fs::create_dir_all(path).map_err(|e| MigrationError::IoError {
+            std::fs::create_dir_all(path).map_err(|e| StoreError::IoError {
                 operation: IoOperationKind::CreateDir,
                 path: path.display().to_string(),
                 context: None,
