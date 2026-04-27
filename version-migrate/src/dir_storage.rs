@@ -48,8 +48,8 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-// Re-export shared types from storage module
-pub use crate::storage::{AtomicWriteConfig, FormatStrategy};
+// Re-export shared types from local_store (storage module re-exports these from local_store)
+pub use local_store::{AtomicWriteConfig, FormatStrategy};
 
 /// File naming encoding strategy for entity IDs.
 ///
