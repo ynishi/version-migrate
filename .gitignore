@@ -27,3 +27,4 @@ workspace
 .worktrees
 .claude
 .ryo
+.mcp.json
