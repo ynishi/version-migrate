@@ -146,6 +146,8 @@ pub mod errors;
 pub mod forward;
 mod migrator;
 pub mod storage;
+pub mod versioned_dir;
+pub mod versioned_file;
 
 // Re-export the derive macros
 pub use version_migrate_macro::Versioned;
@@ -529,6 +531,13 @@ pub use dir_storage::{DirStorage, DirStorageStrategy, FilenameEncoding};
 
 #[cfg(feature = "async")]
 pub use dir_storage::AsyncDirStorage;
+
+// Re-export versioned wrappers (raw IO delegated to local_store)
+pub use versioned_dir::VersionedDirStorage;
+pub use versioned_file::VersionedFileStorage;
+
+#[cfg(feature = "async")]
+pub use versioned_dir::VersionedAsyncDirStorage;
 
 // Re-export forward compatibility types
 pub use forward::{ForwardContext, Forwardable};

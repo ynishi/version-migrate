@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `StoreError`: dedicated error type for path/IO operations (variants: `HomeDirNotFound`, `IoError { operation, path, context, error }`)
   - `IoOperationKind`: enum classifying IO operation kinds (8 variants with `Display` impl)
 - `version-migrate` re-exports `AppPaths`, `PathStrategy`, `PrefPath`, `StoreError`, and `IoOperationKind` from `local-store` for backward-compatible import paths
+- `local-store` crate now also publishes raw storage primitives:
+  - `FileStorage` (raw, ACID single-file storage; no migrator)
+  - `DirStorage` / `AsyncDirStorage` (raw, multi-file entity storage; `async` feature gates the async variant)
+  - `AtomicWriteConfig`, `FormatStrategy`, `FileStorageStrategy`, `LoadBehavior`
+  - `DirStorageStrategy`, `FilenameEncoding`
+  - `DirStorage` / `AsyncDirStorage` accept `category: impl Into<String>` (raw layer; the version-migrate facade keeps its `&str` signature unchanged)
+- `version-migrate` adds new `VersionedFileStorage` / `VersionedDirStorage` / `VersionedAsyncDirStorage` wrappers that hold `ConfigMigrator` / `Migrator` and delegate raw IO to `local_store::*`. They coexist with the existing `FileStorage` / `DirStorage` / `AsyncDirStorage` types — no existing API is removed.
 
 ### Removed
 - `pub mod paths` module removed from `version-migrate`; callers using `version_migrate::paths::AppPaths` must migrate to `version_migrate::AppPaths` (pre-1.0 breaking change, SemVer minor bump 0.19 → 0.20)

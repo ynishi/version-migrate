@@ -78,6 +78,23 @@ pub enum StoreError {
     /// Failed to find home directory.
     #[error("Cannot determine home directory")]
     HomeDirNotFound,
+
+    /// Failed to encode or decode a filename for the given entity ID.
+    ///
+    /// Raised when a filename encoding strategy (Direct/UrlEncode/Base64) cannot
+    /// encode the ID on write, or cannot decode the stored filename on read.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The entity ID that could not be encoded/decoded.
+    /// * `reason` - A human-readable explanation of the failure.
+    #[error("Failed to encode filename for ID '{id}': {reason}")]
+    FilenameEncoding {
+        /// The entity ID involved in the encoding failure.
+        id: String,
+        /// Human-readable reason for the failure.
+        reason: String,
+    },
 }
 
 #[cfg(test)]
@@ -136,6 +153,20 @@ mod tests {
         assert_eq!(IoOperationKind::CreateDir.to_string(), "create directory");
         assert_eq!(IoOperationKind::ReadDir.to_string(), "read directory");
         assert_eq!(IoOperationKind::Sync.to_string(), "sync");
+    }
+
+    #[test]
+    fn test_store_error_filename_encoding_display() {
+        let err = StoreError::FilenameEncoding {
+            id: "my/id".to_string(),
+            reason: "ID contains invalid characters for Direct encoding".to_string(),
+        };
+        let display = format!("{}", err);
+        assert!(display.contains("my/id"), "display should contain id");
+        assert!(
+            display.contains("invalid characters"),
+            "display should contain reason"
+        );
     }
 
     #[test]
