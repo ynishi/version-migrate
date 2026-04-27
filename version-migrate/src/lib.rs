@@ -522,9 +522,8 @@ pub use errors::{IoOperationKind, MigrationError, StoreError};
 pub use migrator::{ConfigMigrator, MigrationPath, Migrator};
 
 // Re-export storage types
-pub use storage::{
-    AtomicWriteConfig, FileStorage, FileStorageStrategy, FormatStrategy, LoadBehavior,
-};
+pub use local_store::{AtomicWriteConfig, FileStorageStrategy, FormatStrategy, LoadBehavior};
+pub use storage::FileStorage;
 
 // Re-export dir_storage types
 pub use dir_storage::{DirStorage, DirStorageStrategy, FilenameEncoding};
