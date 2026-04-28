@@ -2,9 +2,14 @@
 name = "local-store"
 version = "0.1.0"
 edition = "2021"
-description = "Pure path management for app config/data directories"
+description = "Local storage primitives: platform-agnostic paths, ACID file/dir storage, atomic IO, format dispatch"
+authors.workspace = true
 license.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/local-store"
+readme = "README.md"
+keywords = ["storage", "filesystem", "config", "persistence", "atomic"]
+categories = ["filesystem", "config"]
 
 [dependencies]
 dirs = "5.0"
