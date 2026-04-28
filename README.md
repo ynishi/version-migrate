@@ -10,7 +10,7 @@ A Rust library for explicit, type-safe schema versioning and migration.
 
 Applications that persist data locally (e.g., session data, configuration) require a robust mechanism for managing changes to the data's schema over time. Ad-hoc solutions using `serde(default)` or `Option<T>` obscure migration logic, introduce technical debt, and lack reliability.
 
-`version-migrate` provides an explicit, type-safe, and developer-friendly framework for schema versioning and migration, inspired by the design philosophy of `serde`.
+`version-migrate` provides an explicit, type-safe, and developer-friendly framework for schema versioning and migration, inspired by the design philosophy of `serde`. Storage and path management are handled by the [`local-store`](./local-store) crate, which can also be used standalone without schema versioning.
 
 ## Features
 
@@ -28,9 +28,9 @@ Applications that persist data locally (e.g., session data, configuration) requi
 - **Hierarchical Structures**: Support for nested versioned entities with root-level versioning
 - **Custom Serialization Keys**: Customize field names (`version_key`, `data_key`) with three-tier priority (Path > Migrator > Type)
 - **Async Support**: Async traits for migrations requiring I/O operations (database, API calls)
-- **File Storage with ACID**: Atomic file operations with retry logic, format conversion (TOML/JSON), and automatic cleanup.
-- **Directory Storage with ACID**: A new storage engine (`DirStorage`) for managing entities as individual files, ideal for session or task management. Also provides a fully non-blocking `AsyncDirStorage` under an `async` feature flag.
-- **Platform-Agnostic Paths**: Unified path management across Linux, macOS, Windows with customizable strategies (System/Xdg/CustomBase)
+- **File Storage with ACID**: Atomic file operations with retry logic, format conversion (TOML/JSON), and automatic cleanup — powered by `local-store`.
+- **Directory Storage with ACID**: A new storage engine (`DirStorage`) for managing entities as individual files, ideal for session or task management. Also provides a fully non-blocking `AsyncDirStorage` under an `async` feature flag — powered by `local-store`.
+- **Platform-Agnostic Paths**: Unified path management across Linux, macOS, Windows with customizable strategies (System/Xdg/CustomBase) — powered by `local-store`.
 - **Forward Compatibility**: Load data from unknown/future versions with `Forwardable<T>` wrapper, preserving unknown fields for non-destructive saves
 
 ## Installation
