@@ -1,129 +1,12 @@
-//! File storage layer with ACID guarantees for versioned configuration.
+//! File storage layer with migration support.
 //!
-//! Provides atomic file operations, format conversion, and file locking.
+//! Provides `FileStorage`, which wraps `local_store::FileStorage` for raw ACID
+//! file operations and layers `ConfigMigrator`-based schema evolution on top.
 
-use crate::{
-    errors::{IoOperationKind, StoreError},
-    ConfigMigrator, MigrationError, Migrator, Queryable,
-};
+use crate::{ConfigMigrator, MigrationError, Migrator, Queryable};
+use local_store::{FileStorageStrategy, FormatStrategy, LoadBehavior};
 use serde_json::Value as JsonValue;
-use std::fs::{self, File};
-use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
-
-/// File format strategy for storage operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FormatStrategy {
-    /// TOML format (recommended for human-editable configs)
-    Toml,
-    /// JSON format
-    Json,
-}
-
-/// Configuration for atomic write operations.
-#[derive(Debug, Clone)]
-pub struct AtomicWriteConfig {
-    /// Number of times to retry rename operation (default: 3)
-    pub retry_count: usize,
-    /// Whether to clean up old temporary files (best effort)
-    pub cleanup_tmp_files: bool,
-}
-
-impl Default for AtomicWriteConfig {
-    fn default() -> Self {
-        Self {
-            retry_count: 3,
-            cleanup_tmp_files: true,
-        }
-    }
-}
-
-/// Behavior when loading a file that doesn't exist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoadBehavior {
-    /// Create an empty ConfigMigrator if file is missing
-    CreateIfMissing,
-    /// Create an empty ConfigMigrator and save it to file if missing
-    SaveIfMissing,
-    /// Return an error if file is missing
-    ErrorIfMissing,
-}
-
-/// Strategy for file storage operations.
-#[derive(Debug, Clone)]
-pub struct FileStorageStrategy {
-    /// File format to use
-    pub format: FormatStrategy,
-    /// Atomic write configuration
-    pub atomic_write: AtomicWriteConfig,
-    /// Behavior when file doesn't exist
-    pub load_behavior: LoadBehavior,
-    /// Default value to use when SaveIfMissing is set (as JSON Value)
-    pub default_value: Option<JsonValue>,
-}
-
-impl Default for FileStorageStrategy {
-    fn default() -> Self {
-        Self {
-            format: FormatStrategy::Toml,
-            atomic_write: AtomicWriteConfig::default(),
-            load_behavior: LoadBehavior::CreateIfMissing,
-            default_value: None,
-        }
-    }
-}
-
-impl FileStorageStrategy {
-    /// Create a new strategy with default values.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the file format.
-    pub fn with_format(mut self, format: FormatStrategy) -> Self {
-        self.format = format;
-        self
-    }
-
-    /// Set the retry count for atomic writes.
-    pub fn with_retry_count(mut self, count: usize) -> Self {
-        self.atomic_write.retry_count = count;
-        self
-    }
-
-    /// Set whether to cleanup temporary files.
-    pub fn with_cleanup(mut self, cleanup: bool) -> Self {
-        self.atomic_write.cleanup_tmp_files = cleanup;
-        self
-    }
-
-    /// Set the load behavior.
-    pub fn with_load_behavior(mut self, behavior: LoadBehavior) -> Self {
-        self.load_behavior = behavior;
-        self
-    }
-
-    /// Set the default value to use when SaveIfMissing is set.
-    ///
-    /// This value will be used as the initial content when a file doesn't exist
-    /// and `LoadBehavior::SaveIfMissing` is configured.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use serde_json::json;
-    ///
-    /// let strategy = FileStorageStrategy::new()
-    ///     .with_load_behavior(LoadBehavior::SaveIfMissing)
-    ///     .with_default_value(json!({
-    ///         "test": [{"name": "default", "count": 0}]
-    ///     }));
-    /// ```
-    pub fn with_default_value(mut self, value: JsonValue) -> Self {
-        self.default_value = Some(value);
-        self
-    }
-}
 
 /// File storage with ACID guarantees and automatic migrations.
 ///
@@ -132,9 +15,15 @@ impl FileStorageStrategy {
 /// - **Consistency**: Format validation on load/save
 /// - **Isolation**: File locking prevents concurrent modifications
 /// - **Durability**: Explicit fsync before rename
+///
+/// Raw IO (`atomic_rename`, `get_temp_path`, `cleanup_temp_files`) lives
+/// exclusively inside `local_store::FileStorage`.
 pub struct FileStorage {
-    path: PathBuf,
+    /// Raw ACID-safe file store (no migration knowledge).
+    inner: local_store::FileStorage,
+    /// In-memory versioned configuration (migration layer).
     config: ConfigMigrator,
+    /// Strategy governing format, load behaviour, etc.
     strategy: FileStorageStrategy,
 }
 
@@ -153,59 +42,55 @@ impl FileStorage {
     ///
     /// Depends on `strategy.load_behavior`:
     /// - `CreateIfMissing`: Creates empty config if file doesn't exist
+    /// - `SaveIfMissing`: Creates empty config and saves it if file doesn't exist
     /// - `ErrorIfMissing`: Returns error if file doesn't exist
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let strategy = FileStorageStrategy::default();
-    /// let migrator = Migrator::new();
-    /// let storage = FileStorage::new(
-    ///     PathBuf::from("config.toml"),
-    ///     migrator,
-    ///     strategy
-    /// )?;
-    /// ```
     pub fn new(
         path: PathBuf,
         migrator: Migrator,
         strategy: FileStorageStrategy,
     ) -> Result<Self, MigrationError> {
-        // Track if file was missing for SaveIfMissing behavior
+        // Track whether the file existed before we open it.
         let file_was_missing = !path.exists();
 
-        // Load file content if it exists
-        let json_string = if path.exists() {
-            let content = fs::read_to_string(&path).map_err(|e| {
-                MigrationError::Store(StoreError::IoError {
-                    operation: IoOperationKind::Read,
-                    path: path.display().to_string(),
-                    context: None,
-                    error: e.to_string(),
-                })
-            })?;
+        // Build an inner strategy that always uses CreateIfMissing so the raw
+        // layer does not interfere with our own LoadBehavior logic.
+        let inner_strategy = FileStorageStrategy {
+            load_behavior: LoadBehavior::CreateIfMissing,
+            ..strategy.clone()
+        };
+        let inner = local_store::FileStorage::new(path.clone(), inner_strategy)
+            .map_err(MigrationError::Store)?;
 
-            if content.trim().is_empty() {
-                // Empty file, use empty JSON
+        // Determine the JSON string we hand to ConfigMigrator.
+        let json_string = if !file_was_missing {
+            // File existed: read it and convert to JSON.
+            let raw = inner.read_string().map_err(MigrationError::Store)?;
+            if raw.trim().is_empty() {
                 "{}".to_string()
             } else {
-                // Parse based on format strategy
                 match strategy.format {
                     FormatStrategy::Toml => {
-                        let toml_value: toml::Value = toml::from_str(&content)
+                        let tv: toml::Value = toml::from_str(&raw)
                             .map_err(|e| MigrationError::TomlParseError(e.to_string()))?;
-                        let json_value = toml_to_json(toml_value)?;
-                        serde_json::to_string(&json_value)
+                        let jv = toml_to_json(tv)?;
+                        serde_json::to_string(&jv)
                             .map_err(|e| MigrationError::SerializationError(e.to_string()))?
                     }
-                    FormatStrategy::Json => content,
+                    FormatStrategy::Json => raw,
                 }
             }
         } else {
-            // File doesn't exist
+            // File was missing: apply LoadBehavior.
             match strategy.load_behavior {
+                LoadBehavior::ErrorIfMissing => {
+                    return Err(MigrationError::Store(local_store::StoreError::IoError {
+                        operation: local_store::IoOperationKind::Read,
+                        path: path.display().to_string(),
+                        context: None,
+                        error: "File not found".to_string(),
+                    }));
+                }
                 LoadBehavior::CreateIfMissing | LoadBehavior::SaveIfMissing => {
-                    // Use default_value if provided, otherwise use empty JSON
                     if let Some(ref default_value) = strategy.default_value {
                         serde_json::to_string(default_value)
                             .map_err(|e| MigrationError::SerializationError(e.to_string()))?
@@ -213,27 +98,17 @@ impl FileStorage {
                         "{}".to_string()
                     }
                 }
-                LoadBehavior::ErrorIfMissing => {
-                    return Err(MigrationError::Store(StoreError::IoError {
-                        operation: IoOperationKind::Read,
-                        path: path.display().to_string(),
-                        context: None,
-                        error: "File not found".to_string(),
-                    }));
-                }
             }
         };
 
-        // Create ConfigMigrator with loaded/empty data
         let config = ConfigMigrator::from(&json_string, migrator)?;
-
         let storage = Self {
-            path,
+            inner,
             config,
             strategy,
         };
 
-        // If file was missing and SaveIfMissing is set, save the empty config
+        // When SaveIfMissing is set and the file was absent, persist now.
         if file_was_missing && storage.strategy.load_behavior == LoadBehavior::SaveIfMissing {
             storage.save()?;
         }
@@ -243,78 +118,27 @@ impl FileStorage {
 
     /// Save current state to file atomically.
     ///
-    /// Uses a temporary file + atomic rename to ensure durability.
-    /// Retries according to `strategy.atomic_write.retry_count`.
+    /// Serialises the `ConfigMigrator` value to the configured format (TOML or
+    /// JSON) and delegates the atomic write (tmp file + fsync + rename) to
+    /// `local_store::FileStorage::write_string`.
     pub fn save(&self) -> Result<(), MigrationError> {
-        // Ensure parent directory exists
-        if let Some(parent) = self.path.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    MigrationError::Store(StoreError::IoError {
-                        operation: IoOperationKind::CreateDir,
-                        path: parent.display().to_string(),
-                        context: Some("parent directory".to_string()),
-                        error: e.to_string(),
-                    })
-                })?;
-            }
-        }
-
-        // Get current state as JSON
         let json_value = self.config.as_value();
 
-        // Convert to target format
         let content = match self.strategy.format {
             FormatStrategy::Toml => {
-                let toml_value = json_to_toml(json_value)?;
-                toml::to_string_pretty(&toml_value)
+                let tv = local_store::json_to_toml(json_value).map_err(|e| {
+                    MigrationError::Store(local_store::StoreError::FormatConvert(e))
+                })?;
+                toml::to_string_pretty(&tv)
                     .map_err(|e| MigrationError::TomlSerializeError(e.to_string()))?
             }
-            FormatStrategy::Json => serde_json::to_string_pretty(&json_value)
+            FormatStrategy::Json => serde_json::to_string_pretty(json_value)
                 .map_err(|e| MigrationError::SerializationError(e.to_string()))?,
         };
 
-        // Write to temporary file
-        let tmp_path = self.get_temp_path()?;
-        let mut tmp_file = File::create(&tmp_path).map_err(|e| {
-            MigrationError::Store(StoreError::IoError {
-                operation: IoOperationKind::Create,
-                path: tmp_path.display().to_string(),
-                context: Some("temporary file".to_string()),
-                error: e.to_string(),
-            })
-        })?;
-
-        tmp_file.write_all(content.as_bytes()).map_err(|e| {
-            MigrationError::Store(StoreError::IoError {
-                operation: IoOperationKind::Write,
-                path: tmp_path.display().to_string(),
-                context: Some("temporary file".to_string()),
-                error: e.to_string(),
-            })
-        })?;
-
-        // Ensure data is written to disk
-        tmp_file.sync_all().map_err(|e| {
-            MigrationError::Store(StoreError::IoError {
-                operation: IoOperationKind::Sync,
-                path: tmp_path.display().to_string(),
-                context: Some("temporary file".to_string()),
-                error: e.to_string(),
-            })
-        })?;
-
-        drop(tmp_file);
-
-        // Atomic rename with retry
-        self.atomic_rename(&tmp_path)?;
-
-        // Cleanup old temp files (best effort)
-        if self.strategy.atomic_write.cleanup_tmp_files {
-            let _ = self.cleanup_temp_files();
-        }
-
-        Ok(())
+        self.inner
+            .write_string(&content)
+            .map_err(MigrationError::Store)
     }
 
     /// Get immutable reference to the ConfigMigrator.
@@ -362,105 +186,21 @@ impl FileStorage {
     ///
     /// A reference to the file path where the configuration is stored.
     pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Get path to temporary file for atomic writes.
-    fn get_temp_path(&self) -> Result<PathBuf, MigrationError> {
-        let parent = self.path.parent().ok_or_else(|| {
-            MigrationError::PathResolution("Path has no parent directory".to_string())
-        })?;
-
-        let file_name = self
-            .path
-            .file_name()
-            .ok_or_else(|| MigrationError::PathResolution("Path has no file name".to_string()))?;
-
-        let tmp_name = format!(
-            ".{}.tmp.{}",
-            file_name.to_string_lossy(),
-            std::process::id()
-        );
-        Ok(parent.join(tmp_name))
-    }
-
-    /// Atomically rename temporary file to target path with retry.
-    fn atomic_rename(&self, tmp_path: &Path) -> Result<(), MigrationError> {
-        let mut last_error = None;
-
-        for attempt in 0..self.strategy.atomic_write.retry_count {
-            match fs::rename(tmp_path, &self.path) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    last_error = Some(e);
-                    if attempt + 1 < self.strategy.atomic_write.retry_count {
-                        // Small delay before retry
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                }
-            }
-        }
-
-        Err(MigrationError::Store(StoreError::IoError {
-            operation: IoOperationKind::Rename,
-            path: self.path.display().to_string(),
-            context: Some(format!(
-                "after {} retries",
-                self.strategy.atomic_write.retry_count
-            )),
-            error: last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "unknown error after retries".to_string()),
-        }))
-    }
-
-    /// Clean up old temporary files (best effort).
-    fn cleanup_temp_files(&self) -> std::io::Result<()> {
-        let parent = match self.path.parent() {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-
-        let file_name = match self.path.file_name() {
-            Some(f) => f.to_string_lossy(),
-            None => return Ok(()),
-        };
-
-        let prefix = format!(".{}.tmp.", file_name);
-
-        if let Ok(entries) = fs::read_dir(parent) {
-            for entry in entries.flatten() {
-                if let Ok(name) = entry.file_name().into_string() {
-                    if name.starts_with(&prefix) {
-                        // Try to remove, but ignore errors (best effort)
-                        let _ = fs::remove_file(entry.path());
-                    }
-                }
-            }
-        }
-
-        Ok(())
+        self.inner.path()
     }
 }
 
-/// Convert toml::Value to serde_json::Value.
+// ============================================================================
+// Private format-conversion helpers
+// ============================================================================
+
+/// Convert a `toml::Value` to a `serde_json::Value`.
 fn toml_to_json(toml_value: toml::Value) -> Result<JsonValue, MigrationError> {
-    // Serialize toml::Value to JSON string, then parse as serde_json::Value
     let json_str = serde_json::to_string(&toml_value)
         .map_err(|e| MigrationError::SerializationError(e.to_string()))?;
     let json_value: JsonValue = serde_json::from_str(&json_str)
         .map_err(|e| MigrationError::DeserializationError(e.to_string()))?;
     Ok(json_value)
-}
-
-/// Convert serde_json::Value to toml::Value.
-fn json_to_toml(json_value: &JsonValue) -> Result<toml::Value, MigrationError> {
-    // Serialize serde_json::Value to JSON string, then parse as toml::Value
-    let json_str = serde_json::to_string(json_value)
-        .map_err(|e| MigrationError::SerializationError(e.to_string()))?;
-    let toml_value: toml::Value = serde_json::from_str(&json_str)
-        .map_err(|e| MigrationError::TomlParseError(e.to_string()))?;
-    Ok(toml_value)
 }
 
 #[cfg(test)]
@@ -622,7 +362,9 @@ mod tests {
         assert!(result.is_err()); // Should error when file doesn't exist
         assert!(matches!(
             result,
-            Err(MigrationError::Store(StoreError::IoError { .. }))
+            Err(MigrationError::Store(
+                local_store::StoreError::IoError { .. }
+            ))
         ));
     }
 
@@ -735,7 +477,7 @@ mod tests {
         storage.update_and_save("test", entities).unwrap();
 
         // Verify no temp file left behind
-        let entries: Vec<_> = fs::read_dir(temp_dir.path())
+        let entries: Vec<_> = std::fs::read_dir(temp_dir.path())
             .unwrap()
             .filter_map(|e| e.ok())
             .collect();
@@ -772,7 +514,7 @@ mod tests {
         let file_path = temp_dir.path().join("empty.toml");
 
         // Create an empty file
-        fs::write(&file_path, "").unwrap();
+        std::fs::write(&file_path, "").unwrap();
 
         let migrator = setup_migrator();
         let strategy = FileStorageStrategy::default();
@@ -788,7 +530,7 @@ mod tests {
         let file_path = temp_dir.path().join("whitespace.toml");
 
         // Create a file with only whitespace
-        fs::write(&file_path, "   \n\t\n  ").unwrap();
+        std::fs::write(&file_path, "   \n\t\n  ").unwrap();
 
         let migrator = setup_migrator();
         let strategy = FileStorageStrategy::default();
@@ -845,8 +587,8 @@ mod tests {
         // Create some fake old temp files
         let fake_tmp1 = temp_dir.path().join(".cleanup_test.toml.tmp.99999");
         let fake_tmp2 = temp_dir.path().join(".cleanup_test.toml.tmp.88888");
-        fs::write(&fake_tmp1, "old temp 1").unwrap();
-        fs::write(&fake_tmp2, "old temp 2").unwrap();
+        std::fs::write(&fake_tmp1, "old temp 1").unwrap();
+        std::fs::write(&fake_tmp2, "old temp 2").unwrap();
 
         let mut storage = FileStorage::new(file_path.clone(), migrator, strategy).unwrap();
 
@@ -871,7 +613,7 @@ mod tests {
 
         // Create a fake old temp file
         let fake_tmp = temp_dir.path().join(".no_cleanup.toml.tmp.99999");
-        fs::write(&fake_tmp, "old temp").unwrap();
+        std::fs::write(&fake_tmp, "old temp").unwrap();
 
         let mut storage = FileStorage::new(file_path.clone(), migrator, strategy).unwrap();
 
@@ -912,7 +654,7 @@ mod tests {
 
     #[test]
     fn test_atomic_write_config_default() {
-        let config = AtomicWriteConfig::default();
+        let config = local_store::AtomicWriteConfig::default();
         assert_eq!(config.retry_count, 3);
         assert!(config.cleanup_tmp_files);
     }

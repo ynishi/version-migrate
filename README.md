@@ -1098,11 +1098,11 @@ fn test_config_persistence() {
 
 The library is split into three crates:
 
-- **`local-store`**: Standalone path and storage primitive crate. Provides `AppPaths`, `PathStrategy`, `PrefPath`, `StoreError`, and `IoOperationKind`. Has minimal dependencies (`dirs`, `thiserror`) and can be used independently of `version-migrate`.
-- **`version-migrate`**: Core library with traits, `Migrator`, storage engines (`FileStorage`, `DirStorage`), and error types. Re-exports all `local-store` public types so existing import paths remain unchanged.
+- **`local-store`**: Standalone path and storage primitive crate. Provides `AppPaths`, `PathStrategy`, `PrefPath`, `StoreError`, and `IoOperationKind`, as well as raw storage types (`FileStorage`, `DirStorage`, `AsyncDirStorage`) and helper modules (`atomic_io`, `format_convert`). Has minimal dependencies (`dirs`, `thiserror`) and can be used independently of `version-migrate`.
+- **`version-migrate`**: Core library with traits, `Migrator`, storage engines (`FileStorage`, `DirStorage`, `AsyncDirStorage`), and error types. The storage types are thin delegation wrappers over `local-store` counterparts — all raw IO and format-conversion logic lives in `local-store`. Re-exports all `local-store` public types so existing import paths remain unchanged.
 - **`version-migrate-macro`**: Procedural macro for deriving `Versioned` trait.
 
-This mirrors the structure of popular libraries like `serde`.
+This mirrors the structure of popular libraries like `serde`. The two-layer design means `local-store` handles raw ACID IO (atomic rename, temp-path management, JSON/TOML conversion) while `version-migrate` adds schema versioning and migration on top, with no duplication of IO logic between the two crates.
 
 ## Documentation
 

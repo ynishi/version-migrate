@@ -137,7 +137,9 @@ impl VersionedFileStorage {
 
         let content = match self.strategy.format {
             FormatStrategy::Toml => {
-                let tv = json_to_toml(json_value)?;
+                let tv = local_store::format_convert::json_to_toml(json_value).map_err(|e| {
+                    MigrationError::Store(local_store::StoreError::FormatConvert(e))
+                })?;
                 toml::to_string_pretty(&tv)
                     .map_err(|e| MigrationError::TomlSerializeError(e.to_string()))?
             }
@@ -220,15 +222,6 @@ fn toml_to_json(toml_value: toml::Value) -> Result<JsonValue, MigrationError> {
     let json_value: JsonValue = serde_json::from_str(&json_str)
         .map_err(|e| MigrationError::DeserializationError(e.to_string()))?;
     Ok(json_value)
-}
-
-/// Convert a `serde_json::Value` to a `toml::Value`.
-fn json_to_toml(json_value: &JsonValue) -> Result<toml::Value, MigrationError> {
-    let json_str = serde_json::to_string(json_value)
-        .map_err(|e| MigrationError::SerializationError(e.to_string()))?;
-    let toml_value: toml::Value = serde_json::from_str(&json_str)
-        .map_err(|e| MigrationError::TomlParseError(e.to_string()))?;
-    Ok(toml_value)
 }
 
 #[cfg(test)]

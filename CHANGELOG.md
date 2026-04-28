@@ -22,12 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `DirStorageStrategy`, `FilenameEncoding`
   - `DirStorage` / `AsyncDirStorage` accept `category: impl Into<String>` (raw layer; the version-migrate facade keeps its `&str` signature unchanged)
 - `version-migrate` adds new `VersionedFileStorage` / `VersionedDirStorage` / `VersionedAsyncDirStorage` wrappers that hold `ConfigMigrator` / `Migrator` and delegate raw IO to `local_store::*`. They coexist with the existing `FileStorage` / `DirStorage` / `AsyncDirStorage` types — no existing API is removed.
+- `local_store::format_convert` module extracted (Rule of Three: 3+ call sites): exposes `json_to_toml` as a free function returning `Result<toml::Value, FormatConvertError>`. `FormatConvertError` is a new `thiserror`-derived error enum.
+- `local_store::atomic_io` module extracted (Rule of Three: 3+ call sites per helper): exposes `get_temp_path`, `atomic_rename`, `cleanup_temp_files` as free functions (sync), with async variants gated behind `#[cfg(feature = "async")]`.
+- `local_store::StoreError::FormatConvert(FormatConvertError)` variant added (additive; `StoreError` is `#[non_exhaustive]`). No caller breakage.
 
 ### Removed
 - `pub mod paths` module removed from `version-migrate`; callers using `version_migrate::paths::AppPaths` must migrate to `version_migrate::AppPaths` (pre-1.0 breaking change, SemVer minor bump 0.19 → 0.20)
 
 ### Changed
 - **BREAKING**: `MigrationError::IoError` and `MigrationError::HomeDirNotFound` variants removed. Replaced by `MigrationError::Store(StoreError)` via `#[from] StoreError` wiring. Pattern matches on these variants must be updated to `MigrationError::Store(StoreError::IoError { .. })` and `MigrationError::Store(StoreError::HomeDirNotFound)` respectively.
+- **Internal refactor (no API change)**: `version-migrate` `FileStorage`, `DirStorage`, and `AsyncDirStorage` are now thin delegation wrappers over `local_store::FileStorage`, `local_store::DirStorage`, and `local_store::AsyncDirStorage` respectively. All raw IO logic (atomic write, atomic rename, temp-path helpers, format conversion) now lives exclusively in `local-store`. Caller API is fully source-compatible (BREAKING ZERO). Duplicate type definitions (`FormatStrategy`, `AtomicWriteConfig`, `LoadBehavior`, `FileStorageStrategy`, `DirStorageStrategy`, `FilenameEncoding`) removed from `version-migrate` and re-exported from `local-store` under the same public paths.
 
 - Initial implementation of `version-migrate` core library
 - `Versioned` trait for marking versioned data schemas
